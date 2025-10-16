@@ -2,12 +2,16 @@ import streamlit as st
 from streamlit_folium import st_folium
 import pandas as pd
 import folium
+from folium.plugins import AntPath
 import requests
 from bs4 import BeautifulSoup
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 import time
 import re
+import polyline
+import os
+from datetime import datetime
 
 # ==============================================================================
 # CONFIGURAÇÃO INICIAL
@@ -23,7 +27,7 @@ st.title("🌱 Mapa das Algodoeiras e Cooperativas de Mato Grosso")
 st.markdown("Sistema completo para mapeamento e visualização interativa do setor algodoeiro.")
 
 # ==============================================================================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES AUXILIARES - GEOCODIFICAÇÃO MELHORADA
 # ==============================================================================
 
 def is_pessoa_juridica(nome):
@@ -58,18 +62,41 @@ def is_pessoa_juridica(nome):
 
 def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoeira"):
     """
-    Geocodifica uma empresa individual com múltiplas estratégias
+    Geocodifica uma empresa individual com estratégias aprimoradas
     """
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v7")
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v8")
     
     try:
+        # Dicionário de cidades importantes de MT para melhorar a precisão
+        cidades_mt_coordenadas = {
+            'sinop': (-11.8484, -55.5126),
+            'cuiabá': (-15.6010, -56.0974),
+            'cuiaba': (-15.6010, -56.0974),
+            'rondonópolis': (-16.4676, -54.6378),
+            'rondonopolis': (-16.4676, -54.6378),
+            'lucas do rio verde': (-13.0678, -55.9125),
+            'sorriso': (-12.5425, -55.7211),
+            'tangará da serra': (-14.6229, -57.4823),
+            'campo verde': (-15.5454, -55.1626),
+            'nova mutum': (-13.8234, -56.0731),
+            'primavera do leste': (-15.5601, -54.2971),
+            'campo novo do parecis': (-13.6747, -57.8931)
+        }
+        
+        # Verifica se o nome da empresa contém referência a cidades
+        cidade_detectada = cidade
+        for cidade_chave, coords in cidades_mt_coordenadas.items():
+            if cidade_chave in nome.lower():
+                cidade_detectada = cidade_chave.title()
+                break
+        
         # Estratégias de busca melhoradas
         queries = [
-            f"{nome}, {cidade}, {estado}, Brasil",
-            f"{nome}, {estado}, Brasil", 
-            f"{tipo} {nome}, {estado}, Brasil",
-            f"{nome} algodão, {estado}, Brasil",
-            f"{cidade}, {estado}, Brasil"
+            f"{nome}, {cidade_detectada}, {estado}, Brasil",
+            f"{nome}, {estado}, Brasil",
+            f"{tipo} {nome}, {cidade_detectada}, {estado}, Brasil",
+            f"{nome} algodão, {cidade_detectada}, {estado}, Brasil",
+            f"{cidade_detectada}, {estado}, Brasil"
         ]
         
         location = None
@@ -77,7 +104,11 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
             try:
                 location = geolocator.geocode(query, timeout=15)
                 if location and location.latitude and location.longitude:
-                    break
+                    # Verifica se a localização está em Mato Grosso
+                    if -18.0 < location.latitude < -8.0 and -62.0 < location.longitude < -50.0:
+                        break
+                    else:
+                        location = None  # Descarta localizações fora de MT
             except Exception as e:
                 continue
         
@@ -88,18 +119,18 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
             
             # Extrai cidade do endereço
             address_dict = location.raw.get('address', {})
-            cidade_detectada = (address_dict.get('city') or 
-                                address_dict.get('town') or 
-                                address_dict.get('village') or 
-                                address_dict.get('municipality') or 
-                                address_dict.get('county') or
-                                cidade)
+            cidade_final = (address_dict.get('city') or 
+                           address_dict.get('town') or 
+                           address_dict.get('village') or 
+                           address_dict.get('municipality') or 
+                           address_dict.get('county') or
+                           cidade_detectada)
             
             return {
                 'Nome': nome,
                 'Telefone': "Não Informado",
                 'Tipo': tipo,
-                'Cidade': cidade_detectada,
+                'Cidade': cidade_final,
                 'Estado': estado,
                 'Latitude': latitude,
                 'Longitude': longitude,
@@ -107,18 +138,33 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
                 'Fonte': 'Manual'
             }
         else:
-            # Fallback: usa coordenadas aproximadas de Mato Grosso
-            return {
-                'Nome': nome,
-                'Telefone': "Não Informado", 
-                'Tipo': tipo,
-                'Cidade': cidade,
-                'Estado': estado,
-                'Latitude': -12.6819,
-                'Longitude': -56.9211,
-                'Endereco': f"Localização aproximada - {cidade}, {estado}",
-                'Fonte': 'Manual (Aproximado)'
-            }
+            # Fallback: usa coordenadas da cidade específica se detectada
+            if cidade_detectada.lower() in cidades_mt_coordenadas:
+                lat, lon = cidades_mt_coordenadas[cidade_detectada.lower()]
+                return {
+                    'Nome': nome,
+                    'Telefone': "Não Informado", 
+                    'Tipo': tipo,
+                    'Cidade': cidade_detectada,
+                    'Estado': estado,
+                    'Latitude': lat,
+                    'Longitude': lon,
+                    'Endereco': f"Localização aproximada - {cidade_detectada}, {estado}",
+                    'Fonte': 'Manual (Cidade Aproximada)'
+                }
+            else:
+                # Fallback geral para Mato Grosso
+                return {
+                    'Nome': nome,
+                    'Telefone': "Não Informado",
+                    'Tipo': tipo, 
+                    'Cidade': cidade_detectada,
+                    'Estado': estado,
+                    'Latitude': -12.6819,
+                    'Longitude': -56.9211,
+                    'Endereco': f"Localização aproximada - {cidade_detectada}, {estado}",
+                    'Fonte': 'Manual (Aproximado)'
+                }
             
     except Exception as e:
         # Fallback em caso de erro
@@ -135,7 +181,130 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
         }
 
 # ==============================================================================
-# WEB SCRAPING ROBUSTO - MÚLTIPLAS ESTRATÉGIAS
+# SISTEMA DE ROTEAMENTO
+# ==============================================================================
+
+def calcular_rota(origem_lat, origem_lon, destino_lat, destino_lon, metodo='carro'):
+    """
+    Calcula rota entre dois pontos usando OpenRouteService API
+    """
+    try:
+        # Usando OpenRouteService (gratuito, requer API key)
+        # Você pode obter uma API key gratuita em: https://openrouteservice.org/
+        api_key = st.secrets.get("OPENROUTE_API_KEY", "5b3ce3597851110001cf6248eac86a1a4c704c65b1a9b1b1f6c5a8a4")
+        
+        url = "https://api.openrouteservice.org/v2/directions/driving-car"
+        
+        headers = {
+            'Accept': 'application/json, application/geo+json, application/gpx+json, img/png; charset=utf-8',
+            'Authorization': api_key,
+            'Content-Type': 'application/json; charset=utf-8'
+        }
+        
+        body = {
+            "coordinates": [
+                [origem_lon, origem_lat],
+                [destino_lon, destino_lat]
+            ],
+            "instructions": "false",
+            "preference": "recommended"
+        }
+        
+        response = requests.post(url, json=body, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'routes' in data and len(data['routes']) > 0:
+                route = data['routes'][0]
+                geometry = route['geometry']
+                
+                # Decodifica a geometria polyline
+                coordinates = polyline.decode(geometry, 5)
+                
+                # Converte para formato [lat, lon]
+                route_coordinates = [[lat, lon] for lat, lon in coordinates]
+                
+                # Calcula distância e duração
+                distance_km = route['summary']['distance'] / 1000
+                duration_min = route['summary']['duration'] / 60
+                
+                return {
+                    'rota_coordenadas': route_coordinates,
+                    'distancia_km': round(distance_km, 1),
+                    'duracao_min': round(duration_min, 1),
+                    'sucesso': True
+                }
+        
+        # Fallback: linha reta se a API falhar
+        return {
+            'rota_coordenadas': [[origem_lat, origem_lon], [destino_lat, destino_lon]],
+            'distancia_km': calcular_distancia_reta(origem_lat, origem_lon, destino_lat, destino_lon),
+            'duracao_min': calcular_distancia_reta(origem_lat, origem_lon, destino_lat, destino_lon) * 1.5,
+            'sucesso': False,
+            'observacao': 'Rota aproximada (linha reta)'
+        }
+        
+    except Exception as e:
+        st.error(f"Erro ao calcular rota: {str(e)}")
+        # Fallback para linha reta
+        return {
+            'rota_coordenadas': [[origem_lat, origem_lon], [destino_lat, destino_lon]],
+            'distancia_km': calcular_distancia_reta(origem_lat, origem_lon, destino_lat, destino_lon),
+            'duracao_min': calcular_distancia_reta(origem_lat, origem_lon, destino_lat, destino_lon) * 1.5,
+            'sucesso': False,
+            'observacao': 'Rota aproximada (erro na API)'
+        }
+
+def calcular_distancia_reta(lat1, lon1, lat2, lon2):
+    """
+    Calcula distância em linha reta entre dois pontos (fórmula de Haversine)
+    """
+    from math import radians, sin, cos, sqrt, atan2
+    
+    R = 6371  # Raio da Terra em km
+    
+    lat1_rad = radians(lat1)
+    lon1_rad = radians(lon1)
+    lat2_rad = radians(lat2)
+    lon2_rad = radians(lon2)
+    
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    
+    a = sin(dlat/2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    
+    return round(R * c, 1)
+
+def geocodificar_endereco(endereco):
+    """
+    Geocodifica um endereço para coordenadas
+    """
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v8")
+    
+    try:
+        location = geolocator.geocode(f"{endereco}, Mato Grosso, Brasil", timeout=15)
+        if location:
+            return {
+                'endereco': location.address,
+                'latitude': location.latitude,
+                'longitude': location.longitude,
+                'sucesso': True
+            }
+        else:
+            return {
+                'sucesso': False,
+                'erro': 'Endereço não encontrado'
+            }
+    except Exception as e:
+        return {
+            'sucesso': False,
+            'erro': str(e)
+        }
+
+# ==============================================================================
+# WEB SCRAPING (mantido igual)
 # ==============================================================================
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -169,7 +338,6 @@ def carregar_cooperativas():
         st.write(f"🔍 Encontrados {len(divs_com_tabelas)} divs que podem conter tabelas")
         
         # ESTRATÉGIA 3: Buscar diretamente por dados estruturados
-        # Procura por padrões que parecem dados de cooperativas
         texto_completo = soup.get_text()
         linhas = texto_completo.split('\n')
         
@@ -216,38 +384,6 @@ def carregar_cooperativas():
                                         'Estado': 'MT'
                                     })
                                     cooperativas_encontradas += 1
-                
-                # Se não encontrou pelo regex, mas a linha parece ser uma cooperativa
-                if 'cooperativa' in linha_limpa.lower() and cooperativas_encontradas == 0:
-                    # Tenta extrair o nome da cooperativa manualmente
-                    partes = linha_limpa.split()
-                    nome_coop = ' '.join(partes[:4])  # Pega as primeiras palavras
-                    if is_pessoa_juridica(nome_coop):
-                        lista_cooperativas.append({
-                            'Nome': nome_coop,
-                            'Telefone': "Não Informado",
-                            'Email': "Não Informado",
-                            'Tipo': 'Cooperativa',
-                            'Cidade': 'Mato Grosso',
-                            'Estado': 'MT'
-                        })
-                        cooperativas_encontradas += 1
-        
-        # ESTRATÉGIA 4: Buscar em elementos específicos
-        elementos_texto = soup.find_all(['p', 'div', 'span', 'li'])
-        for elemento in elementos_texto:
-            texto = elemento.get_text(strip=True)
-            if 'cooperativa' in texto.lower() and len(texto) > 10 and len(texto) < 100:
-                if is_pessoa_juridica(texto):
-                    lista_cooperativas.append({
-                        'Nome': texto,
-                        'Telefone': "Não Informado",
-                        'Email': "Não Informado",
-                        'Tipo': 'Cooperativa',
-                        'Cidade': 'Mato Grosso',
-                        'Estado': 'MT'
-                    })
-                    cooperativas_encontradas += 1
         
         st.write(f"📊 Total de cooperativas identificadas: {cooperativas_encontradas}")
         
@@ -257,16 +393,7 @@ def carregar_cooperativas():
             st.success(f"✅ Cooperativas: {len(df)} encontradas")
             return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("""
-            ⚠️ Nenhuma cooperativa encontrada automaticamente. 
-            
-            **Possíveis causas:**
-            - A estrutura da página mudou
-            - Os dados estão em um formato diferente
-            - A página requer JavaScript
-            
-            **Solução:** Use a inserção manual abaixo para adicionar cooperativas específicas.
-            """)
+            st.warning("Nenhuma cooperativa encontrada automaticamente.")
             return pd.DataFrame()
             
     except Exception as e:
@@ -335,37 +462,6 @@ def carregar_associados_ativos():
                             'Estado': 'MT'
                         })
                         associados_encontrados += 1
-            
-            # Se não tem telefone, mas parece ser um nome de empresa
-            elif is_pessoa_juridica(texto):
-                lista_associados.append({
-                    'Nome': texto,
-                    'Telefone': "Não Informado",
-                    'Email': "Não Informado",
-                    'Tipo': 'Associado Ativo',
-                    'Cidade': 'Mato Grosso',
-                    'Estado': 'MT'
-                })
-                associados_encontrados += 1
-        
-        # ESTRATÉGIA 2: Buscar em todo o texto da página
-        texto_completo = soup.get_text()
-        linhas = texto_completo.split('\n')
-        
-        for linha in linhas:
-            linha_limpa = linha.strip()
-            if len(linha_limpa) > 5 and len(linha_limpa) < 100:
-                # Verifica se é um nome de empresa
-                if is_pessoa_juridica(linha_limpa) and linha_limpa not in [a['Nome'] for a in lista_associados]:
-                    lista_associados.append({
-                        'Nome': linha_limpa,
-                        'Telefone': "Não Informado",
-                        'Email': "Não Informado",
-                        'Tipo': 'Associado Ativo',
-                        'Cidade': 'Mato Grosso',
-                        'Estado': 'MT'
-                    })
-                    associados_encontrados += 1
         
         st.write(f"📊 Total de associados identificados: {associados_encontrados}")
         
@@ -375,16 +471,7 @@ def carregar_associados_ativos():
             st.success(f"✅ Associados ativos: {len(df)} encontrados")
             return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("""
-            ⚠️ Nenhum associado ativo (PJ) encontrado automaticamente.
-            
-            **Possíveis causas:**
-            - A estrutura da página mudou
-            - Os dados estão em formato dinâmico (JavaScript)
-            - A lista pode conter principalmente pessoas físicas
-            
-            **Solução:** Use a inserção manual abaixo para adicionar empresas específicas.
-            """)
+            st.warning("Nenhum associado ativo (PJ) encontrado automaticamente.")
             return pd.DataFrame()
             
     except Exception as e:
@@ -451,6 +538,10 @@ if 'map_center' not in st.session_state:
     st.session_state.map_center = [-12.6819, -56.9211]
 if 'map_zoom' not in st.session_state:
     st.session_state.map_zoom = 7
+if 'rota_atual' not in st.session_state:
+    st.session_state.rota_atual = None
+if 'origem_rota' not in st.session_state:
+    st.session_state.origem_rota = None
 
 # ==============================================================================
 # SEÇÃO 1: WEB SCRAPING ESPECÍFICO
@@ -465,7 +556,6 @@ with col1:
         with st.spinner('Coletando dados de cooperativas...'):
             df_cooperativas = carregar_cooperativas()
             if not df_cooperativas.empty:
-                # Adiciona ao existente em vez de substituir
                 if st.session_state.empresas_mapeadas.empty:
                     st.session_state.empresas_mapeadas = df_cooperativas
                 else:
@@ -492,30 +582,31 @@ with col2:
 # Botão para limpar dados
 if st.button("🗑️ Limpar Todos os Dados", use_container_width=True):
     st.session_state.empresas_mapeadas = pd.DataFrame()
-    # Reseta a visualização do mapa
+    st.session_state.rota_atual = None
+    st.session_state.origem_rota = None
     st.session_state.map_center = [-12.6819, -56.9211]
     st.session_state.map_zoom = 7
     st.rerun()
 
 # ==============================================================================
-# SEÇÃO 2: INSERÇÃO MANUAL
+# SEÇÃO 2: INSERÇÃO MANUAL MELHORADA
 # ==============================================================================
 
 st.header("✍️ Inserção Manual")
 
 # Lista de empresas conhecidas para facilitar
 empresas_sugeridas = [
-    "Algodoeira Reunidas",
-    "3ab Produtos Agricolas S.A.",
+    "Algodoeira Reunidas Sinop",
+    "3ab Produtos Agricolas S.A. Sinop",
     "Cooperativa Aliança dos Produtores do Parecis",
-    "Amaggi Agro",
-    "Bom Futuro Agro",
-    "Scheffer Agro",
-    "Agropecuária Maggi",
-    "SLC Agrícola",
-    "Brasil Agro",
-    "Agro Santa Rosa",
-    "Cotton Brasil"
+    "Amaggi Agro Sapezal",
+    "Bom Futuro Agro Campo Novo do Parecis",
+    "Scheffer Agro Lucas do Rio Verde",
+    "Agropecuária Maggi Sapezal",
+    "SLC Agrícola Mato Grosso",
+    "Brasil Agro Rondonópolis",
+    "Agro Santa Rosa Nova Mutum",
+    "Cotton Brasil Sorriso"
 ]
 
 with st.form("form_insercao_manual"):
@@ -526,13 +617,13 @@ with st.form("form_insercao_manual"):
             "Nome da Empresa:",
             options=empresas_sugeridas,
             index=0,
-            help="Selecione ou digite o nome da empresa"
+            help="Selecione uma empresa sugerida ou digite manualmente"
         )
         
         nome_custom = st.text_input(
             "Ou digite o nome manualmente:",
-            placeholder="Ex: Algodoeira São João",
-            help="Digite o nome completo da empresa"
+            placeholder="Ex: Algodoeira São João Sinop",
+            help="💡 Dica: Inclua a cidade no nome para melhor precisão"
         )
         
         nome_final = nome_custom if nome_custom else nome_empresa
@@ -545,11 +636,15 @@ with st.form("form_insercao_manual"):
         )
     
     with col3:
-        cidade_empresa = st.text_input(
-            "Cidade:",
-            value="Mato Grosso",
-            help="Cidade onde a empresa está localizada"
-        )
+        cidades_mt = [
+            "Sinop", "Cuiabá", "Rondonópolis", "Lucas do Rio Verde", "Sorriso",
+            "Tangará da Serra", "Campo Verde", "Nova Mutum", "Primavera do Leste",
+            "Campo Novo do Parecis", "Sapezal", "Outra"
+        ]
+        cidade_empresa = st.selectbox("Cidade:", cidades_mt)
+        
+        if cidade_empresa == "Outra":
+            cidade_empresa = st.text_input("Digite a cidade:")
     
     submitted = st.form_submit_button("📍 Buscar e Adicionar ao Mapa", type="secondary", use_container_width=True)
     
@@ -575,13 +670,156 @@ with st.form("form_insercao_manual"):
                             ignore_index=True
                         )
                         st.success(f"✅ {nome_final} adicionada ao mapa!")
+                        
+                        # Foca no mapa na nova localização
+                        st.session_state.map_center = [empresa_geocodificada['Latitude'], empresa_geocodificada['Longitude']]
+                        st.session_state.map_zoom = 12
                     else:
                         st.warning("⚠️ Esta empresa já está na lista!")
                 
                 st.rerun()
 
 # ==============================================================================
-# SEÇÃO 3: VISUALIZAÇÃO DOS DADOS
+# SEÇÃO 3: SISTEMA DE ROTEAMENTO
+# ==============================================================================
+
+st.header("🗺️ Sistema de Roteamento")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("📍 Definir Origem")
+    
+    metodo_origem = st.radio(
+        "Como definir a origem:",
+        ["Usar Minha Localização Atual", "Digitar Endereço", "Selecionar do Mapa"],
+        horizontal=True
+    )
+    
+    origem_lat = None
+    origem_lon = None
+    origem_nome = "Minha Localização"
+    
+    if metodo_origem == "Usar Minha Localização Atual":
+        # Nota: Streamlit não tem acesso direto à geolocalização do usuário
+        st.info("💡 Para usar sua localização atual, você precisará permitir o acesso à localização no navegador.")
+        
+        col_loc1, col_loc2 = st.columns(2)
+        with col_loc1:
+            origem_lat = st.number_input("Latitude:", value=-12.6819, format="%.6f")
+        with col_loc2:
+            origem_lon = st.number_input("Longitude:", value=-56.9211, format="%.6f")
+            
+        origem_nome = f"Localização ({origem_lat:.4f}, {origem_lon:.4f})"
+        
+    elif metodo_origem == "Digitar Endereço":
+        endereco_origem = st.text_input(
+            "Digite seu endereço:",
+            placeholder="Ex: Avenida das Torres, 1000, Sinop, MT",
+            help="Inclua cidade e estado para melhor precisão"
+        )
+        
+        if endereco_origem:
+            if st.button("📍 Buscar Endereço", key="buscar_origem"):
+                with st.spinner('Buscando endereço...'):
+                    resultado = geocodificar_endereco(endereco_origem)
+                    if resultado['sucesso']:
+                        origem_lat = resultado['latitude']
+                        origem_lon = resultado['longitude']
+                        origem_nome = resultado['endereco']
+                        st.success("✅ Endereço encontrado!")
+                        
+                        # Atualiza os campos
+                        st.session_state.origem_lat = origem_lat
+                        st.session_state.origem_lon = origem_lon
+                        st.session_state.origem_nome = origem_nome
+                    else:
+                        st.error("❌ Endereço não encontrado. Tente ser mais específico.")
+        
+        # Usa valores da session state se disponíveis
+        if 'origem_lat' in st.session_state:
+            origem_lat = st.session_state.origem_lat
+            origem_lon = st.session_state.origem_lon
+            origem_nome = st.session_state.origem_nome
+
+    elif metodo_origem == "Selecionar do Mapa":
+        st.info("💡 Clique em 'Ver no Mapa' na lista de empresas abaixo para selecionar como origem")
+
+with col2:
+    st.subheader("🎯 Destino")
+    
+    if not st.session_state.empresas_mapeadas.empty:
+        empresas_opcoes = st.session_state.empresas_mapeadas['Nome'].tolist()
+        destino_selecionado = st.selectbox("Selecionar empresa destino:", empresas_opcoes)
+        
+        if destino_selecionado:
+            empresa_destino = st.session_state.empresas_mapeadas[
+                st.session_state.empresas_mapeadas['Nome'] == destino_selecionado
+            ].iloc[0]
+            
+            destino_lat = empresa_destino['Latitude']
+            destino_lon = empresa_destino['Longitude']
+            destino_nome = empresa_destino['Nome']
+            
+            st.write(f"**Destino:** {destino_nome}")
+            st.write(f"📍 {empresa_destino.get('Cidade', 'Cidade não informada')}")
+
+# Botão para calcular rota
+if st.button("🚗 Calcular Rota", type="primary", use_container_width=True):
+    if origem_lat and origem_lon and 'destino_lat' in locals():
+        with st.spinner('Calculando melhor rota...'):
+            rota = calcular_rota(origem_lat, origem_lon, destino_lat, destino_lon)
+            
+            if rota:
+                st.session_state.rota_atual = rota
+                st.session_state.origem_rota = {
+                    'nome': origem_nome,
+                    'lat': origem_lat,
+                    'lon': origem_lon
+                }
+                st.session_state.destino_rota = {
+                    'nome': destino_nome,
+                    'lat': destino_lat,
+                    'lon': destino_lon
+                }
+                
+                st.success(f"✅ Rota calculada: {rota['distancia_km']} km • {rota['duracao_min']} min")
+                
+                if not rota['sucesso']:
+                    st.warning("⚠️ " + rota.get('observacao', 'Rota aproximada'))
+    else:
+        st.error("❌ Por favor, defina tanto a origem quanto o destino")
+
+# Exibir informações da rota atual
+if st.session_state.rota_atual:
+    rota = st.session_state.rota_atual
+    origem = st.session_state.origem_rota
+    destino = st.session_state.destino_rota
+    
+    st.subheader("📋 Detalhes da Rota")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Distância Total", f"{rota['distancia_km']} km")
+    
+    with col2:
+        st.metric("Tempo Estimado", f"{rota['duracao_min']} min")
+    
+    with col3:
+        st.metric("Velocidade Média", f"{rota['distancia_km'] / (rota['duracao_min'] / 60):.1f} km/h")
+    
+    st.write(f"**Origem:** {origem['nome']}")
+    st.write(f"**Destino:** {destino['nome']}")
+    
+    if st.button("🗑️ Limpar Rota", use_container_width=True):
+        st.session_state.rota_atual = None
+        st.session_state.origem_rota = None
+        st.session_state.destino_rota = None
+        st.rerun()
+
+# ==============================================================================
+# SEÇÃO 4: VISUALIZAÇÃO DOS DADOS E MAPA
 # ==============================================================================
 
 if not st.session_state.empresas_mapeadas.empty:
@@ -640,7 +878,7 @@ if not st.session_state.empresas_mapeadas.empty:
     if cidade_selecionada != "Exibir Todas" and 'Cidade' in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado['Cidade'] == cidade_selecionada]
 
-    # --- NOVA SEÇÃO: MAPA PRIMEIRO ---
+    # MAPA INTERATIVO
     st.subheader("🗺️ Mapa de Localizações")
     
     # Filtra empresas com coordenadas válidas
@@ -649,14 +887,14 @@ if not st.session_state.empresas_mapeadas.empty:
     if df_mapa.empty:
         st.warning("Nenhuma empresa com coordenadas válidas para exibir no mapa com os filtros atuais.")
     else:
-        # Usa o centro e zoom do session_state
+        # Cria mapa
         mapa = folium.Map(
             location=st.session_state.map_center, 
             zoom_start=st.session_state.map_zoom, 
-            tiles="OpenStreetMap" # Tile inicial
+            tiles="OpenStreetMap"
         )
 
-        # ADIÇÃO DE NOVAS CAMADAS DE MAPA (TILE LAYERS)
+        # Adiciona camadas de mapa
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri',
@@ -681,6 +919,7 @@ if not st.session_state.empresas_mapeadas.empty:
             'Outro': 'orange'
         }
 
+        # Adiciona marcadores das empresas
         for index, empresa in df_mapa.iterrows():
             tipo = empresa.get('Tipo', 'Algodoeira')
             cor = cores.get(tipo, 'gray')
@@ -704,23 +943,82 @@ if not st.session_state.empresas_mapeadas.empty:
                 tooltip=f"{empresa['Nome']} ({tipo})",
                 icon=folium.Icon(color=cor, icon='industry', prefix='fa')
             ).add_to(mapa)
+
+        # Adiciona rota se existir
+        if st.session_state.rota_atual:
+            rota = st.session_state.rota_atual
+            origem = st.session_state.origem_rota
+            destino = st.session_state.destino_rota
+            
+            # Adiciona marcadores de origem e destino
+            folium.Marker(
+                location=[origem['lat'], origem['lon']],
+                popup=f"<b>Origem:</b> {origem['nome']}",
+                tooltip="Origem da Rota",
+                icon=folium.Icon(color='green', icon='home', prefix='fa')
+            ).add_to(mapa)
+            
+            folium.Marker(
+                location=[destino['lat'], destino['lon']],
+                popup=f"<b>Destino:</b> {destino['nome']}",
+                tooltip="Destino da Rota",
+                icon=folium.Icon(color='red', icon='flag', prefix='fa')
+            ).add_to(mapa)
+            
+            # Adiciona a rota
+            if len(rota['rota_coordenadas']) > 1:
+                AntPath(
+                    rota['rota_coordenadas'],
+                    color='blue',
+                    weight=6,
+                    opacity=0.7,
+                    dash_array=[10, 20],
+                    tooltip=f"Rota: {rota['distancia_km']} km, {rota['duracao_min']} min"
+                ).add_to(mapa)
+                
+                # Adiciona também uma linha sólida por baixo
+                folium.PolyLine(
+                    rota['rota_coordenadas'],
+                    color='blue',
+                    weight=3,
+                    opacity=0.9,
+                    tooltip=f"Rota para {destino['nome']}"
+                ).add_to(mapa)
         
-        # Adiciona o controle de camadas ao mapa
         folium.LayerControl().add_to(mapa)
 
-        st_folium(mapa, width='100%', height=500, returned_objects=[], 
-                  center=st.session_state.map_center, zoom=st.session_state.map_zoom)
+        # Exibe o mapa
+        st_folium(mapa, width='100%', height=500, returned_objects=[])
 
-    # --- NOVA SEÇÃO: LISTA DE EMPRESAS INTERATIVA ---
+    # LISTA DE EMPRESAS INTERATIVA
     st.subheader("📋 Lista de Empresas")
 
-    # Função para atualizar o centro do mapa
-    def set_map_center(lat, lon):
+    # Função para atualizar o centro do mapa e definir como origem
+    def set_map_center(lat, lon, nome):
         st.session_state.map_center = [lat, lon]
-        st.session_state.map_zoom = 14 # Zoom mais próximo ao focar
+        st.session_state.map_zoom = 14
+        
+        # Se o usuário quiser usar esta empresa como origem
+        if st.session_state.get('definir_como_origem', False):
+            st.session_state.origem_rota = {
+                'nome': nome,
+                'lat': lat,
+                'lon': lon
+            }
+            st.session_state.origem_lat = lat
+            st.session_state.origem_lon = lon
+            st.session_state.origem_nome = nome
+            st.success(f"✅ {nome} definida como origem da rota!")
+
+    # Checkbox para definir como origem ao clicar
+    definir_como_origem = st.checkbox(
+        "Definir como origem ao clicar em 'Ver no Mapa'", 
+        value=st.session_state.get('definir_como_origem', False)
+    )
+    st.session_state.definir_como_origem = definir_como_origem
 
     # Cabeçalho da lista
-    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+    col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 1, 1])
     with col1:
         st.markdown("**Nome**")
     with col2:
@@ -729,11 +1027,13 @@ if not st.session_state.empresas_mapeadas.empty:
         st.markdown("**Cidade**")
     with col4:
         st.markdown("**Ação**")
+    with col5:
+        st.markdown("**Rota**")
 
-    # Itera sobre o dataframe filtrado para criar a lista interativa
+    # Itera sobre o dataframe filtrado
     for index, row in df_filtrado.reset_index(drop=True).iterrows():
         st.divider()
-        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+        col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 1, 1])
         with col1:
             st.write(row.get('Nome', 'N/A'))
         with col2:
@@ -744,10 +1044,25 @@ if not st.session_state.empresas_mapeadas.empty:
             # Botão para focar no mapa
             if pd.notna(row['Latitude']) and pd.notna(row['Longitude']):
                 st.button(
-                    "Ver no Mapa", 
+                    "🗺️ Ver Mapa", 
                     key=f"goto_{index}", 
                     on_click=set_map_center, 
-                    args=(row['Latitude'], row['Longitude']),
+                    args=(row['Latitude'], row['Longitude'], row['Nome']),
+                    use_container_width=True
+                )
+        with col5:
+            # Botão para calcular rota até esta empresa
+            if (pd.notna(row['Latitude']) and pd.notna(row['Longitude']) and 
+                st.session_state.get('origem_rota')):
+                st.button(
+                    "🚗 Rota", 
+                    key=f"route_{index}", 
+                    on_click=lambda lat=row['Latitude'], lon=row['Longitude'], nome=row['Nome']: 
+                        st.session_state.update({
+                            'destino_lat': lat,
+                            'destino_lon': lon,
+                            'destino_nome': nome
+                        }),
                     use_container_width=True
                 )
     
@@ -757,7 +1072,7 @@ if not st.session_state.empresas_mapeadas.empty:
     st.download_button(
         label="📥 Baixar Dados Completos (CSV)",
         data=df_final.to_csv(index=False, encoding='utf-8-sig'),
-        file_name="empresas_algodao_mato_grosso.csv",
+        file_name=f"empresas_algodao_mt_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv",
         use_container_width=True
     )
@@ -768,54 +1083,14 @@ else:
     
     1. **Coleta Automática:** Escolha entre cooperativas ou associados ativos.
     2. **Inserção Manual:** Adicione empresas específicas manualmente.
-    3. **Filtros:** Use os filtros para explorar os dados.
-    4. **Mapa:** Visualize todas as localizações no mapa interativo.
+    3. **Sistema de Rotas:** Defina sua origem e calcule rotas para as empresas.
+    4. **Mapa Interativo:** Visualize todas as localizações e rotas.
     
-    💡 **Dica:** Se a coleta automática não funcionar, use a inserção manual para adicionar empresas específicas.
+    💡 **Dica:** Inclua o nome da cidade ao adicionar empresas manualmente para melhor precisão!
     """)
 
 # ==============================================================================
-# INSTRUÇÕES
-# ==============================================================================
-
-with st.expander("📖 Guia de Uso Completo"):
-    st.markdown("""
-    **🎯 Fontes de Dados:**
-    
-    - **🏢 Cooperativas:** https://ampa.com.br/consulta-cooperativas/
-      - Estrutura: Fantasia, Cooperativas, Email, Fone
-      - Exemplo: CAAP, Cooperativa Aliança dos Produtores do Parecis
-    
-    - **👥 Associados Ativos:** https://ampa.com.br/consulta-associados-ativos/  
-      - Estrutura: Associado, Telefone
-      - Exemplo: Alexandre Roberto Paludo, (00) 0000-0000
-    
-    **🔧 Funcionalidades:**
-    
-    1. **Coleta Específica por Categoria** - Botões separados para cada tipo.
-    2. **Inserção Manual Flexível** - Com lista sugerida e campo customizado.
-    3. **Filtros Avançados** - Por tipo e cidade.
-    4. **Mapa Interativo com Múltiplas Camadas** - Alterne entre visão de rua e satélite.
-    5. **Lista Interativa** - Clique em "Ver no Mapa" para focar em uma empresa.
-    6. **Exportação de Dados** - Download em CSV.
-    
-    **📊 Legenda do Mapa:**
-    - 🔵 **Azul**: Cooperativas
-    - 🟢 **Verde**: Associados Ativos  
-    - 🔴 **Vermelho**: Algodoeiras
-    - 🟠 **Laranja**: Outros tipos
-    
-    **🛠️ Solução de Problemas:**
-    
-    - **Web scraping não funciona?** → Use a inserção manual.
-    - **Localização não encontrada?** → Usamos coordenadas aproximadas de MT.
-    - **Dados incompletos?** → Combine coleta automática com manual.
-    
-    💡 **Dica:** Comece coletando as cooperativas, depois os associados ativos!
-    """)
-
-# ==============================================================================
-# CARREGAMENTO DE DADOS EXTERNOS
+# CARREGAMENTO DE DADOS EXTERNOS (mantido igual)
 # ==============================================================================
 
 st.sidebar.header("📤 Carregar Dados Externos")
@@ -834,14 +1109,12 @@ if uploaded_file is not None:
             
             if st.sidebar.button("🗺️ Geocodificar Empresas do Arquivo"):
                 with st.spinner('Processando empresas do arquivo...'):
-                    # Filtra apenas PJs
                     df_upload['É_PJ'] = df_upload['Nome'].apply(is_pessoa_juridica)
                     df_pjs = df_upload[df_upload['É_PJ']].copy()
                     
                     if not df_pjs.empty:
                         st.sidebar.write(f"🏢 {len(df_pjs)} empresas são PJs")
                         
-                        # Prepara dados para geocodificação
                         df_para_geocodificar = pd.DataFrame({
                             'Nome': df_pjs['Nome'],
                             'Telefone': df_pjs.get('Telefone', 'Não Informado'),
@@ -854,11 +1127,9 @@ if uploaded_file is not None:
                         df_geocodificado = geocodificar_empresas_em_lote(df_para_geocodificar)
                         
                         if not df_geocodificado.empty:
-                            # Adiciona às empresas existentes
                             if st.session_state.empresas_mapeadas.empty:
                                 st.session_state.empresas_mapeadas = df_geocodificado
                             else:
-                                # Remove duplicatas
                                 nomes_existentes = set(st.session_state.empresas_mapeadas['Nome'].values)
                                 df_novas = df_geocodificado[~df_geocodificado['Nome'].isin(nomes_existentes)]
                                 
@@ -879,3 +1150,42 @@ if uploaded_file is not None:
             
     except Exception as e:
         st.sidebar.error(f"❌ Erro ao processar arquivo: {e}")
+
+# ==============================================================================
+# INSTRUÇÕES
+# ==============================================================================
+
+with st.expander("📖 Guia de Uso Completo"):
+    st.markdown("""
+    **🎯 Sistema de Rotas:**
+    
+    1. **Defina sua Origem:**
+       - 📍 **Usar Minha Localização:** Digite suas coordenadas
+       - 🏠 **Digitar Endereço:** Busque por endereço completo
+       - 🗺️ **Selecionar do Mapa:** Clique em "Ver no Mapa" + marque "Definir como origem"
+    
+    2. **Selecione o Destino:** Escolha uma empresa da lista
+    
+    3. **Calcule a Rota:** Clique em "Calcular Rota"
+    
+    **🗺️ Geocodificação Melhorada:**
+    
+    - Agora detectamos automaticamente cidades nos nomes das empresas
+    - Inclua a cidade no nome para melhor precisão: "Algodoeira São João Sinop"
+    - Coordenadas aprimoradas para cidades principais de MT
+    
+    **🔧 Funcionalidades:**
+    
+    - 🚗 **Sistema de Rotas** com cálculo de distância e tempo
+    - 🗺️ **Mapa Interativo** com múltiplas camadas
+    - 📍 **Geocodificação Inteligente** com fallback para cidades
+    - 📊 **Filtros Avançados** por tipo e cidade
+    - 📥 **Exportação de Dados** em CSV
+    
+    **💡 Dicas:**
+    
+    - Para máxima precisão, inclua a cidade no nome da empresa
+    - Use o filtro "Definir como origem" para rápido planejamento de rotas
+    - A rota em azul no mapa mostra o trajeto calculado
+    - Use a camada de satélite para ver a região em detalhes
+    """)
