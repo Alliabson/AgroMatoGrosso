@@ -14,13 +14,13 @@ import re
 # ==============================================================================
 
 st.set_page_config(
-    page_title="Mapa das Algodoeiras de MT", 
+    page_title="Mapa das Algodoeiras de MT",
     layout="wide",
     page_icon="🌱"
 )
 
 st.title("🌱 Mapa das Algodoeiras e Cooperativas de Mato Grosso")
-st.markdown("Sistema completo para mapeamento do setor algodoeiro")
+st.markdown("Sistema completo para mapeamento e visualização interativa do setor algodoeiro.")
 
 # ==============================================================================
 # FUNÇÕES AUXILIARES
@@ -60,7 +60,7 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
     """
     Geocodifica uma empresa individual com múltiplas estratégias
     """
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v6")
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v7")
     
     try:
         # Estratégias de busca melhoradas
@@ -89,11 +89,11 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
             # Extrai cidade do endereço
             address_dict = location.raw.get('address', {})
             cidade_detectada = (address_dict.get('city') or 
-                              address_dict.get('town') or 
-                              address_dict.get('village') or 
-                              address_dict.get('municipality') or 
-                              address_dict.get('county') or
-                              cidade)
+                                address_dict.get('town') or 
+                                address_dict.get('village') or 
+                                address_dict.get('municipality') or 
+                                address_dict.get('county') or
+                                cidade)
             
             return {
                 'Nome': nome,
@@ -447,6 +447,10 @@ def geocodificar_empresas_em_lote(df):
 # Inicializar session state
 if 'empresas_mapeadas' not in st.session_state:
     st.session_state.empresas_mapeadas = pd.DataFrame()
+if 'map_center' not in st.session_state:
+    st.session_state.map_center = [-12.6819, -56.9211]
+if 'map_zoom' not in st.session_state:
+    st.session_state.map_zoom = 7
 
 # ==============================================================================
 # SEÇÃO 1: WEB SCRAPING ESPECÍFICO
@@ -488,6 +492,9 @@ with col2:
 # Botão para limpar dados
 if st.button("🗑️ Limpar Todos os Dados", use_container_width=True):
     st.session_state.empresas_mapeadas = pd.DataFrame()
+    # Reseta a visualização do mapa
+    st.session_state.map_center = [-12.6819, -56.9211]
+    st.session_state.map_zoom = 7
     st.rerun()
 
 # ==============================================================================
@@ -632,36 +639,39 @@ if not st.session_state.empresas_mapeadas.empty:
     
     if cidade_selecionada != "Exibir Todas" and 'Cidade' in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado['Cidade'] == cidade_selecionada]
-    
-    # Tabela de dados
-    st.subheader("📋 Lista de Empresas")
-    colunas_para_mostrar = ['Nome', 'Tipo', 'Cidade', 'Telefone']
-    if 'Email' in df_filtrado.columns:
-        colunas_para_mostrar.append('Email')
-    if 'Fonte' in df_filtrado.columns:
-        colunas_para_mostrar.append('Fonte')
-    
-    st.dataframe(
-        df_filtrado[colunas_para_mostrar].reset_index(drop=True),
-        use_container_width=True,
-        height=400
-    )
-    
-    # Mapa
+
+    # --- NOVA SEÇÃO: MAPA PRIMEIRO ---
     st.subheader("🗺️ Mapa de Localizações")
     
     # Filtra empresas com coordenadas válidas
     df_mapa = df_filtrado.dropna(subset=['Latitude', 'Longitude']).copy()
     
     if df_mapa.empty:
-        st.warning("Nenhuma empresa com coordenadas válidas para exibir no mapa.")
+        st.warning("Nenhuma empresa com coordenadas válidas para exibir no mapa com os filtros atuais.")
     else:
-        # Centro do mapa em Mato Grosso
-        map_center = [-12.6819, -56.9211]
-        if len(df_mapa) > 0:
-            map_center = [df_mapa['Latitude'].mean(), df_mapa['Longitude'].mean()]
-        
-        mapa = folium.Map(location=map_center, zoom_start=7)
+        # Usa o centro e zoom do session_state
+        mapa = folium.Map(
+            location=st.session_state.map_center, 
+            zoom_start=st.session_state.map_zoom, 
+            tiles="OpenStreetMap" # Tile inicial
+        )
+
+        # ADIÇÃO DE NOVAS CAMADAS DE MAPA (TILE LAYERS)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Satélite (Esri)',
+            overlay=False,
+            control=True
+        ).add_to(mapa)
+
+        folium.TileLayer(
+            tiles='CartoDB positron',
+            attr='CartoDB',
+            name='Minimalista (CartoDB)',
+            overlay=False,
+            control=True
+        ).add_to(mapa)
 
         # Cores por tipo de empresa
         cores = {
@@ -695,7 +705,53 @@ if not st.session_state.empresas_mapeadas.empty:
                 icon=folium.Icon(color=cor, icon='industry', prefix='fa')
             ).add_to(mapa)
         
-        st_folium(mapa, width='100%', height=500, returned_objects=[])
+        # Adiciona o controle de camadas ao mapa
+        folium.LayerControl().add_to(mapa)
+
+        st_folium(mapa, width='100%', height=500, returned_objects=[], 
+                  center=st.session_state.map_center, zoom=st.session_state.map_zoom)
+
+    # --- NOVA SEÇÃO: LISTA DE EMPRESAS INTERATIVA ---
+    st.subheader("📋 Lista de Empresas")
+
+    # Função para atualizar o centro do mapa
+    def set_map_center(lat, lon):
+        st.session_state.map_center = [lat, lon]
+        st.session_state.map_zoom = 14 # Zoom mais próximo ao focar
+
+    # Cabeçalho da lista
+    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+    with col1:
+        st.markdown("**Nome**")
+    with col2:
+        st.markdown("**Tipo**")
+    with col3:
+        st.markdown("**Cidade**")
+    with col4:
+        st.markdown("**Ação**")
+
+    # Itera sobre o dataframe filtrado para criar a lista interativa
+    for index, row in df_filtrado.reset_index(drop=True).iterrows():
+        st.divider()
+        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+        with col1:
+            st.write(row.get('Nome', 'N/A'))
+        with col2:
+            st.write(row.get('Tipo', 'N/A'))
+        with col3:
+            st.write(row.get('Cidade', 'N/A'))
+        with col4:
+            # Botão para focar no mapa
+            if pd.notna(row['Latitude']) and pd.notna(row['Longitude']):
+                st.button(
+                    "Ver no Mapa", 
+                    key=f"goto_{index}", 
+                    on_click=set_map_center, 
+                    args=(row['Latitude'], row['Longitude']),
+                    use_container_width=True
+                )
+    
+    st.divider()
     
     # Download
     st.download_button(
@@ -710,10 +766,10 @@ else:
     st.info("""
     👆 **Para começar:**
     
-    1. **Coleta Automática:** Escolha entre cooperativas ou associados ativos
-    2. **Inserção Manual:** Adicione empresas específicas manualmente
-    3. **Filtros:** Use os filtros para explorar os dados
-    4. **Mapa:** Visualize todas as localizações no mapa interativo
+    1. **Coleta Automática:** Escolha entre cooperativas ou associados ativos.
+    2. **Inserção Manual:** Adicione empresas específicas manualmente.
+    3. **Filtros:** Use os filtros para explorar os dados.
+    4. **Mapa:** Visualize todas as localizações no mapa interativo.
     
     💡 **Dica:** Se a coleta automática não funcionar, use a inserção manual para adicionar empresas específicas.
     """)
@@ -736,11 +792,12 @@ with st.expander("📖 Guia de Uso Completo"):
     
     **🔧 Funcionalidades:**
     
-    1. **Coleta Específica por Categoria** - Botões separados para cada tipo
-    2. **Inserção Manual Flexível** - Com lista sugerida e campo customizado
-    3. **Filtros Avançados** - Por tipo e cidade
-    4. **Mapa Colorido** - Cores diferentes para cada tipo de empresa
-    5. **Exportação de Dados** - Download em CSV
+    1. **Coleta Específica por Categoria** - Botões separados para cada tipo.
+    2. **Inserção Manual Flexível** - Com lista sugerida e campo customizado.
+    3. **Filtros Avançados** - Por tipo e cidade.
+    4. **Mapa Interativo com Múltiplas Camadas** - Alterne entre visão de rua e satélite.
+    5. **Lista Interativa** - Clique em "Ver no Mapa" para focar em uma empresa.
+    6. **Exportação de Dados** - Download em CSV.
     
     **📊 Legenda do Mapa:**
     - 🔵 **Azul**: Cooperativas
@@ -750,11 +807,11 @@ with st.expander("📖 Guia de Uso Completo"):
     
     **🛠️ Solução de Problemas:**
     
-    - **Web scraping não funciona?** → Use a inserção manual
-    - **Localização não encontrada?** → Usamos coordenadas aproximadas de MT
-    - **Dados incompletos?** → Combine coleta automática com manual
+    - **Web scraping não funciona?** → Use a inserção manual.
+    - **Localização não encontrada?** → Usamos coordenadas aproximadas de MT.
+    - **Dados incompletos?** → Combine coleta automática com manual.
     
-    **💡 Dica:** Comece coletando as cooperativas, depois os associados ativos!
+    💡 **Dica:** Comece coletando as cooperativas, depois os associados ativos!
     """)
 
 # ==============================================================================
