@@ -102,6 +102,9 @@ def geocodificar_multiplas_empresas(df):
     """
     Geocodifica um DataFrame de empresas
     """
+    if df.empty:
+        return df
+        
     st.write("🗺️ Iniciando geocodificação...")
     
     geolocator = Nominatim(user_agent="algodoeiras_mt_app_v3")
@@ -117,7 +120,11 @@ def geocodificar_multiplas_empresas(df):
     status_text = st.empty()
 
     for index, row in df.iterrows():
-        status_text.text(f"📍 Buscando: {row['Nome'][:40]}...")
+        # CORREÇÃO: Garante que o progresso nunca ultrapasse 1.0
+        progresso_atual = min((index + 1) / total_empresas, 1.0)
+        progress_bar.progress(progresso_atual)
+        
+        status_text.text(f"📍 Buscando: {row['Nome'][:40]}... ({index + 1}/{total_empresas})")
         
         location = None
         query_attempts = [
@@ -151,18 +158,19 @@ def geocodificar_multiplas_empresas(df):
             enderecos.append("Não Localizado")
             cidades_detectadas.append("Mato Grosso")
         
-        progress_bar.progress((index + 1) / total_empresas)
         time.sleep(1.2)
 
-    df['Latitude'] = latitudes
-    df['Longitude'] = longitudes
-    df['Cidade_Detectada'] = cidades_detectadas
-    df['Endereco'] = enderecos
-    df['Fonte'] = 'Web Scraping'
+    df_result = df.copy()
+    df_result['Latitude'] = latitudes
+    df_result['Longitude'] = longitudes
+    df_result['Cidade'] = cidades_detectadas  # CORREÇÃO: Nome da coluna padronizado
+    df_result['Endereco'] = enderecos
+    df_result['Fonte'] = 'Web Scraping'
     
-    df_final = df.dropna(subset=['Latitude', 'Longitude']).copy()
+    df_final = df_result.dropna(subset=['Latitude', 'Longitude']).copy()
     
     status_text.text("✅ Geocodificação finalizada!")
+    progress_bar.empty()
     return df_final
 
 # ==============================================================================
@@ -192,21 +200,24 @@ def carregar_dados_web_scraping():
         # Estratégia simplificada: busca por texto que parece nome de empresa
         elementos_texto = soup.find_all(text=True)
         
+        empresas_encontradas = set()
+        
         for texto in elementos_texto:
             texto_limpo = texto.strip()
             
             if len(texto_limpo) > 5 and is_pessoa_juridica(texto_limpo):
-                lista_empresas.append({
-                    'Nome': texto_limpo,
-                    'Telefone': "Não Informado",
-                    'Tipo': 'Algodoeira',
-                    'Cidade': 'Mato Grosso',
-                    'Estado': 'MT'
-                })
+                if texto_limpo not in empresas_encontradas:
+                    empresas_encontradas.add(texto_limpo)
+                    lista_empresas.append({
+                        'Nome': texto_limpo,
+                        'Telefone': "Não Informado",
+                        'Tipo': 'Algodoeira',
+                        'Cidade': 'Mato Grosso',
+                        'Estado': 'MT'
+                    })
         
         if lista_empresas:
             df = pd.DataFrame(lista_empresas)
-            df = df.drop_duplicates(subset=['Nome'])
             st.success(f"✅ Web scraping: {len(df)} empresas encontradas")
             return geocodificar_multiplas_empresas(df)
         else:
@@ -304,73 +315,7 @@ with st.form("form_insercao_manual"):
                 st.rerun()
 
 # ==============================================================================
-# SEÇÃO 3: CARREGAMENTO EM MASSA
-# ==============================================================================
-
-st.header("📤 Carregamento em Massa")
-
-uploaded_file = st.file_uploader(
-    "Carregue uma lista de empresas (CSV ou Excel):",
-    type=['csv', 'xlsx'],
-    help="Arquivo deve ter uma coluna 'Nome' com os nomes das empresas"
-)
-
-if uploaded_file is not None:
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            df_upload = pd.read_csv(uploaded_file)
-        else:
-            df_upload = pd.read_excel(uploaded_file)
-        
-        if 'Nome' in df_upload.columns:
-            st.write(f"📊 {len(df_upload)} empresas encontradas no arquivo")
-            
-            # Filtra apenas PJs
-            df_upload['É_PJ'] = df_upload['Nome'].apply(is_pessoa_juridica)
-            df_pjs = df_upload[df_upload['É_PJ']].copy()
-            
-            st.write(f"🏢 {len(df_pjs)} são pessoas jurídicas")
-            
-            if not df_pjs.empty and st.button("🗺️ Geocodificar Todas", type="primary"):
-                with st.spinner('Geocodificando empresas do arquivo...'):
-                    # Prepara DataFrame no formato correto
-                    df_para_geocodificar = pd.DataFrame({
-                        'Nome': df_pjs['Nome'],
-                        'Telefone': "Não Informado",
-                        'Tipo': 'Algodoeira',
-                        'Cidade': 'Mato Grosso',
-                        'Estado': 'MT'
-                    })
-                    
-                    df_geocodificado = geocodificar_multiplas_empresas(df_para_geocodificar)
-                    
-                    if not df_geocodificado.empty:
-                        # Adiciona às empresas existentes
-                        if st.session_state.empresas_mapeadas.empty:
-                            st.session_state.empresas_mapeadas = df_geocodificado
-                        else:
-                            # Remove duplicatas
-                            nomes_existentes = set(st.session_state.empresas_mapeadas['Nome'].values)
-                            df_novas = df_geocodificado[~df_geocodificado['Nome'].isin(nomes_existentes)]
-                            
-                            if not df_novas.empty:
-                                st.session_state.empresas_mapeadas = pd.concat(
-                                    [st.session_state.empresas_mapeadas, df_novas], 
-                                    ignore_index=True
-                                )
-                                st.success(f"✅ {len(df_novas)} novas empresas adicionadas!")
-                            else:
-                                st.info("ℹ️ Todas as empresas do arquivo já estão mapeadas")
-                        
-                        st.rerun()
-        else:
-            st.error("❌ Arquivo deve ter uma coluna 'Nome'")
-            
-    except Exception as e:
-        st.error(f"❌ Erro ao processar arquivo: {e}")
-
-# ==============================================================================
-# SEÇÃO 4: VISUALIZAÇÃO DOS DADOS
+# SEÇÃO 3: VISUALIZAÇÃO DOS DADOS
 # ==============================================================================
 
 if not st.session_state.empresas_mapeadas.empty:
@@ -378,17 +323,32 @@ if not st.session_state.empresas_mapeadas.empty:
     
     df_final = st.session_state.empresas_mapeadas
     
-    # Estatísticas
+    # CORREÇÃO: Verifica se as colunas existem antes de acessá-las
     col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
         st.metric("Total de Empresas", len(df_final))
+    
     with col2:
-        st.metric("Cidades", df_final['Cidade_Detectada'].nunique())
+        # Verifica se a coluna Cidade existe
+        if 'Cidade' in df_final.columns:
+            cidades_count = df_final['Cidade'].nunique()
+        else:
+            cidades_count = 0
+        st.metric("Cidades", cidades_count)
+    
     with col3:
-        web_scraping_count = len(df_final[df_final['Fonte'] == 'Web Scraping'])
+        if 'Fonte' in df_final.columns:
+            web_scraping_count = len(df_final[df_final['Fonte'] == 'Web Scraping'])
+        else:
+            web_scraping_count = 0
         st.metric("Web Scraping", web_scraping_count)
+    
     with col4:
-        manual_count = len(df_final[df_final['Fonte'] == 'Manual'])
+        if 'Fonte' in df_final.columns:
+            manual_count = len(df_final[df_final['Fonte'] == 'Manual'])
+        else:
+            manual_count = len(df_final)
         st.metric("Manuais", manual_count)
     
     # Filtros
@@ -396,69 +356,103 @@ if not st.session_state.empresas_mapeadas.empty:
     col1, col2 = st.columns(2)
     
     with col1:
-        cidades = ["Exibir Todas"] + sorted(df_final['Cidade_Detectada'].unique().tolist())
+        # CORREÇÃO: Verifica se a coluna existe
+        if 'Cidade' in df_final.columns and not df_final.empty:
+            cidades = ["Exibir Todas"] + sorted(df_final['Cidade'].unique().tolist())
+        else:
+            cidades = ["Exibir Todas"]
         cidade_selecionada = st.selectbox("Filtrar por Cidade:", cidades)
     
     with col2:
-        fontes = ["Exibir Todas"] + sorted(df_final['Fonte'].unique().tolist())
+        # CORREÇÃO: Verifica se a coluna existe
+        if 'Fonte' in df_final.columns and not df_final.empty:
+            fontes = ["Exibir Todas"] + sorted(df_final['Fonte'].unique().tolist())
+        else:
+            fontes = ["Exibir Todas"]
         fonte_selecionada = st.selectbox("Filtrar por Fonte:", fontes)
     
     # Aplica filtros
     df_filtrado = df_final.copy()
-    if cidade_selecionada != "Exibir Todas":
-        df_filtrado = df_filtrado[df_filtrado['Cidade_Detectada'] == cidade_selecionada]
-    if fonte_selecionada != "Exibir Todas":
+    
+    if cidade_selecionada != "Exibir Todas" and 'Cidade' in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado['Cidade'] == cidade_selecionada]
+    
+    if fonte_selecionada != "Exibir Todas" and 'Fonte' in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado['Fonte'] == fonte_selecionada]
     
-    # Tabela
+    # Tabela - CORREÇÃO: Usa colunas que existem
     st.subheader("📋 Empresas Mapeadas")
+    
+    # Define quais colunas mostrar (apenas as que existem)
+    colunas_para_mostrar = ['Nome']
+    if 'Cidade' in df_filtrado.columns:
+        colunas_para_mostrar.append('Cidade')
+    if 'Fonte' in df_filtrado.columns:
+        colunas_para_mostrar.append('Fonte')
+    if 'Endereco' in df_filtrado.columns:
+        colunas_para_mostrar.append('Endereco')
+    
     st.dataframe(
-        df_filtrado[['Nome', 'Cidade_Detectada', 'Fonte', 'Endereco']].reset_index(drop=True),
+        df_filtrado[colunas_para_mostrar].reset_index(drop=True),
         use_container_width=True,
         height=300
     )
     
-    # Mapa
+    # Mapa - CORREÇÃO: Verifica se há dados após filtragem
     st.subheader("🗺️ Mapa de Localizações")
     
-    map_center = [-12.6819, -56.9211]  # Centro de MT
-    if len(df_filtrado) > 0:
-        map_center = [df_filtrado['Latitude'].mean(), df_filtrado['Longitude'].mean()]
-    
-    mapa = folium.Map(location=map_center, zoom_start=7)
+    if df_filtrado.empty:
+        st.warning("Nenhuma empresa encontrada com os filtros aplicados.")
+    else:
+        # Verifica se as colunas de coordenadas existem
+        if 'Latitude' not in df_filtrado.columns or 'Longitude' not in df_filtrado.columns:
+            st.error("Dados de localização não disponíveis.")
+        else:
+            # Remove linhas com coordenadas inválidas
+            df_mapa = df_filtrado.dropna(subset=['Latitude', 'Longitude']).copy()
+            
+            if df_mapa.empty:
+                st.warning("Nenhuma empresa com coordenadas válidas após filtragem.")
+            else:
+                map_center = [-12.6819, -56.9211]  # Centro de MT
+                if len(df_mapa) > 0:
+                    map_center = [df_mapa['Latitude'].mean(), df_mapa['Longitude'].mean()]
+                
+                mapa = folium.Map(location=map_center, zoom_start=7)
 
-    for index, empresa in df_filtrado.iterrows():
-        # Define cor baseada na fonte
-        cor = 'blue' if empresa['Fonte'] == 'Manual' else 'green'
-        
-        popup_html = f"""
-        <div style="min-width: 250px">
-            <h4>{empresa['Nome']}</h4>
-            <hr>
-            <b>📍 Cidade:</b> {empresa['Cidade_Detectada']}<br>
-            <b>🏢 Tipo:</b> {empresa['Tipo']}<br>
-            <b>📞 Telefone:</b> {empresa['Telefone']}<br>
-            <b>🔍 Fonte:</b> {empresa['Fonte']}<br>
-            <b>🎯 Endereço:</b> {empresa.get('Endereco', 'Não disponível')}
-        </div>
-        """
-        
-        folium.Marker(
-            location=[empresa['Latitude'], empresa['Longitude']],
-            popup=folium.Popup(popup_html, max_width=300),
-            tooltip=f"{empresa['Nome']} ({empresa['Fonte']})",
-            icon=folium.Icon(color=cor, icon='industry', prefix='fa')
-        ).add_to(mapa)
+                for index, empresa in df_mapa.iterrows():
+                    # Define cor baseada na fonte
+                    cor = 'blue' if empresa.get('Fonte') == 'Manual' else 'green'
+                    
+                    popup_html = f"""
+                    <div style="min-width: 250px">
+                        <h4>{empresa['Nome']}</h4>
+                        <hr>
+                        <b>📍 Cidade:</b> {empresa.get('Cidade', 'Não informada')}<br>
+                        <b>🏢 Tipo:</b> {empresa.get('Tipo', 'Algodoeira')}<br>
+                        <b>📞 Telefone:</b> {empresa.get('Telefone', 'Não Informado')}<br>
+                        <b>🔍 Fonte:</b> {empresa.get('Fonte', 'Manual')}<br>
+                        <b>🎯 Endereço:</b> {empresa.get('Endereco', 'Não disponível')}
+                    </div>
+                    """
+                    
+                    folium.Marker(
+                        location=[empresa['Latitude'], empresa['Longitude']],
+                        popup=folium.Popup(popup_html, max_width=300),
+                        tooltip=f"{empresa['Nome']} ({empresa.get('Fonte', 'Manual')})",
+                        icon=folium.Icon(color=cor, icon='industry', prefix='fa')
+                    ).add_to(mapa)
+                
+                st_folium(mapa, width='100%', height=500, returned_objects=[])
     
-    st_folium(mapa, width='100%', height=500, returned_objects=[])
-    
-    # Download
-    st.download_button(
-        label="📥 Baixar Dados Completos",
-        data=df_final.to_csv(index=False, encoding='utf-8-sig'),
-        file_name="algodoeiras_mt_completo.csv",
-        mime="text/csv"
-    )
+    # Download - CORREÇÃO: Botão só aparece se houver dados
+    if not df_final.empty:
+        st.download_button(
+            label="📥 Baixar Dados Completos",
+            data=df_final.to_csv(index=False, encoding='utf-8-sig'),
+            file_name="algodoeiras_mt_completo.csv",
+            mime="text/csv"
+        )
 
 else:
     st.info("👆 Use as opções acima para adicionar empresas ao mapa")
@@ -479,13 +473,9 @@ with st.expander("📖 Como usar este aplicativo"):
     - Clique em "Buscar Localização"
     - O sistema geocodifica e adiciona ao mapa
     
-    **3. Carregamento em Massa** (Para muitas empresas)
-    - Prepare um CSV com coluna "Nome"
-    - Faça upload do arquivo
-    - Geocodifique todas de uma vez
-    
     **Dicas:**
     - Use nomes completos das empresas para melhor geocodificação
     - Empresas com 'LTDA', 'S.A.' são detectadas automaticamente
     - Marcadores azuis = inserção manual | Marcadores verdes = web scraping
+    - Se encontrar erros, use a inserção manual para adicionar empresas específicas
     """)
