@@ -19,8 +19,8 @@ st.set_page_config(
     page_icon="🌱"
 )
 
-st.title("🌱 Mapa das Algodoeiras de Mato Grosso")
-st.markdown("Sistema híbrido: web scraping automático + inserção manual")
+st.title("🌱 Mapa das Algodoeiras e Cooperativas de Mato Grosso")
+st.markdown("Sistema completo para mapeamento do setor algodoeiro")
 
 # ==============================================================================
 # FUNÇÕES AUXILIARES
@@ -42,7 +42,7 @@ def is_pessoa_juridica(nome):
         'holding', 'corporation', 'corp', 'inc', 'cooperative',
         'cooperativa', 'agrônoma', 'agronoma', 'sementes',
         'agricultura', 'ranch', 'farm', 'agribusiness',
-        'algodoeira', 'agricola', 'agroindustrial'
+        'algodoeira', 'agricola', 'agroindustrial', 'cooperativa'
     ]
     
     nome_lower = nome.lower()
@@ -56,21 +56,20 @@ def is_pessoa_juridica(nome):
         
     return False
 
-def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
+def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoeira"):
     """
     Geocodifica uma empresa individual com múltiplas estratégias
     """
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v4")
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v5")
     
     try:
         # Estratégias de busca melhoradas
         queries = [
             f"{nome}, {cidade}, {estado}, Brasil",
             f"{nome}, {estado}, Brasil", 
-            f"Algodoeira {nome}, {estado}, Brasil",
+            f"{tipo} {nome}, {estado}, Brasil",
             f"{nome} algodão, {estado}, Brasil",
-            f"{nome} cotton, {estado}, Brasil",
-            f"{cidade}, {estado}, Brasil"  # Fallback para a cidade
+            f"{cidade}, {estado}, Brasil"
         ]
         
         location = None
@@ -99,7 +98,7 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
             return {
                 'Nome': nome,
                 'Telefone': "Não Informado",
-                'Tipo': 'Algodoeira',
+                'Tipo': tipo,
                 'Cidade': cidade_detectada,
                 'Estado': estado,
                 'Latitude': latitude,
@@ -109,26 +108,24 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
             }
         else:
             # Fallback: usa coordenadas aproximadas de Mato Grosso
-            st.warning(f"⚠️ Usando localização aproximada para: {nome}")
             return {
                 'Nome': nome,
                 'Telefone': "Não Informado", 
-                'Tipo': 'Algodoeira',
+                'Tipo': tipo,
                 'Cidade': cidade,
                 'Estado': estado,
-                'Latitude': -12.6819,  # Coordenadas aproximadas de MT
+                'Latitude': -12.6819,
                 'Longitude': -56.9211,
                 'Endereco': f"Localização aproximada - {cidade}, {estado}",
                 'Fonte': 'Manual (Aproximado)'
             }
             
     except Exception as e:
-        st.error(f"❌ Erro na geocodificação de {nome}: {e}")
         # Fallback em caso de erro
         return {
             'Nome': nome,
             'Telefone': "Não Informado",
-            'Tipo': 'Algodoeira', 
+            'Tipo': tipo, 
             'Cidade': cidade,
             'Estado': estado,
             'Latitude': -12.6819,
@@ -138,24 +135,22 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
         }
 
 # ==============================================================================
-# WEB SCRAPING MELHORADO
+# WEB SCRAPING ESPECÍFICO PARA CADA PÁGINA
 # ==============================================================================
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def carregar_dados_web_scraping():
+def carregar_cooperativas():
     """
-    Web scraping melhorado para o site da AMPA
+    Web scraping específico para a página de cooperativas
     """
-    st.write("🌐 Iniciando web scraping da AMPA...")
+    st.write("🏢 Coletando dados de cooperativas...")
     
-    url = "https://ampa.com.br/consulta-associados-ativos/"
-    lista_empresas = []
+    url = "https://ampa.com.br/consulta-cooperativas/"
+    lista_cooperativas = []
     
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
         }
         
         response = requests.get(url, headers=headers, timeout=30)
@@ -163,83 +158,149 @@ def carregar_dados_web_scraping():
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Estratégia 1: Busca por elementos com texto que parecem nomes de empresas
-        elementos_potenciais = soup.find_all(['div', 'p', 'li', 'span', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+        # Procura por tabelas na página
+        tabelas = soup.find_all('table')
         
-        empresas_encontradas = set()
+        if not tabelas:
+            st.warning("❌ Nenhuma tabela encontrada na página de cooperativas")
+            return pd.DataFrame()
         
-        for elemento in elementos_potenciais:
-            texto = elemento.get_text(strip=True)
+        for tabela in tabelas:
+            # Encontra todas as linhas da tabela
+            linhas = tabela.find_all('tr')
             
-            # Filtra textos muito curtos ou que são claramente não-nomes
-            if (len(texto) < 4 or 
-                len(texto) > 100 or
-                texto.lower() in ['associado', 'nome', 'empresa', 'telefone', 'endereço', 'consulta', 'ativos'] or
-                texto.isdigit() or
-                '©' in texto or
-                'copyright' in texto.lower()):
-                continue
+            # Pega o cabeçalho para entender a estrutura
+            if len(linhas) > 0:
+                cabecalho = [th.get_text(strip=True) for th in linhas[0].find_all(['th', 'td'])]
+                st.write(f"📋 Estrutura da tabela: {cabecalho}")
             
-            # Verifica se é pessoa jurídica
-            if is_pessoa_juridica(texto):
-                if texto not in empresas_encontradas:
-                    empresas_encontradas.add(texto)
-                    lista_empresas.append({
-                        'Nome': texto,
-                        'Telefone': "Não Informado",
-                        'Tipo': 'Algodoeira',
-                        'Cidade': 'Mato Grosso',
-                        'Estado': 'MT'
-                    })
+            # Processa as linhas de dados (pula o cabeçalho)
+            for linha in linhas[1:]:
+                celulas = linha.find_all(['td', 'th'])
+                if len(celulas) >= 2:  # Pelo menos 2 colunas
+                    # Diferentes estruturas possíveis
+                    if len(celulas) >= 4:
+                        # Estrutura: Fantasia, Cooperativas, Email, Fone
+                        fantasia = celulas[0].get_text(strip=True)
+                        nome_cooperativa = celulas[1].get_text(strip=True)
+                        email = celulas[2].get_text(strip=True) if len(celulas) > 2 else "Não Informado"
+                        telefone = celulas[3].get_text(strip=True) if len(celulas) > 3 else "Não Informado"
+                        
+                        # Prefere o nome da cooperativa, mas usa fantasia se necessário
+                        nome_final = nome_cooperativa if nome_cooperativa else fantasia
+                        
+                    elif len(celulas) == 2:
+                        # Estrutura simples: Nome, Telefone
+                        nome_final = celulas[0].get_text(strip=True)
+                        telefone = celulas[1].get_text(strip=True)
+                        email = "Não Informado"
+                    
+                    else:
+                        continue
+                    
+                    if nome_final and is_pessoa_juridica(nome_final):
+                        lista_cooperativas.append({
+                            'Nome': nome_final,
+                            'Telefone': telefone,
+                            'Email': email,
+                            'Tipo': 'Cooperativa',
+                            'Cidade': 'Mato Grosso',
+                            'Estado': 'MT'
+                        })
         
-        # Estratégia 2: Busca por padrões comuns em nomes de empresas
-        texto_completo = soup.get_text()
-        linhas = texto_completo.split('\n')
-        
-        for linha in linhas:
-            linha_limpa = linha.strip()
-            if (len(linha_limpa) > 4 and 
-                len(linha_limpa) < 100 and
-                is_pessoa_juridica(linha_limpa) and
-                linha_limpa not in empresas_encontradas):
-                
-                empresas_encontradas.add(linha_limpa)
-                lista_empresas.append({
-                    'Nome': linha_limpa,
-                    'Telefone': "Não Informado", 
-                    'Tipo': 'Algodoeira',
-                    'Cidade': 'Mato Grosso',
-                    'Estado': 'MT'
-                })
-        
-        if lista_empresas:
-            df = pd.DataFrame(lista_empresas)
+        if lista_cooperativas:
+            df = pd.DataFrame(lista_cooperativas)
             df = df.drop_duplicates(subset=['Nome'])
-            st.success(f"✅ Web scraping: {len(df)} empresas encontradas")
-            
-            # Geocodificação em lote
+            st.success(f"✅ Cooperativas: {len(df)} encontradas")
             return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("⚠️ Nenhuma empresa encontrada via web scraping. O site pode ter mudado.")
+            st.warning("⚠️ Nenhuma cooperativa encontrada")
             return pd.DataFrame()
             
     except Exception as e:
-        st.error(f"❌ Erro no web scraping: {str(e)}")
+        st.error(f"❌ Erro ao coletar cooperativas: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def carregar_associados_ativos():
+    """
+    Web scraping específico para a página de associados ativos
+    """
+    st.write("👥 Coletando dados de associados ativos...")
+    
+    url = "https://ampa.com.br/consulta-associados-ativos/"
+    lista_associados = []
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Procura por tabelas na página
+        tabelas = soup.find_all('table')
+        
+        if not tabelas:
+            st.warning("❌ Nenhuma tabela encontrada na página de associados")
+            return pd.DataFrame()
+        
+        for tabela in tabelas:
+            # Encontra todas as linhas da tabela
+            linhas = tabela.find_all('tr')
+            
+            # Processa as linhas de dados
+            for linha in linhas:
+                celulas = linha.find_all(['td', 'th'])
+                if len(celulas) >= 2:  # Pelo menos 2 colunas
+                    nome = celulas[0].get_text(strip=True)
+                    telefone = celulas[1].get_text(strip=True) if len(celulas) > 1 else "Não Informado"
+                    
+                    # Pula cabeçalhos e linhas vazias
+                    if not nome or nome.lower() in ['associado', 'nome', 'empresa']:
+                        continue
+                    
+                    # Filtra apenas pessoas jurídicas
+                    if is_pessoa_juridica(nome):
+                        lista_associados.append({
+                            'Nome': nome,
+                            'Telefone': telefone,
+                            'Email': "Não Informado",
+                            'Tipo': 'Associado Ativo',
+                            'Cidade': 'Mato Grosso',
+                            'Estado': 'MT'
+                        })
+        
+        if lista_associados:
+            df = pd.DataFrame(lista_associados)
+            df = df.drop_duplicates(subset=['Nome'])
+            st.success(f"✅ Associados ativos: {len(df)} encontrados")
+            return geocodificar_empresas_em_lote(df)
+        else:
+            st.warning("⚠️ Nenhum associado ativo (PJ) encontrado")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"❌ Erro ao coletar associados ativos: {str(e)}")
         return pd.DataFrame()
 
 def geocodificar_empresas_em_lote(df):
     """
-    Geocodifica empresas em lote com fallbacks
+    Geocodifica empresas em lote
     """
     if df.empty:
         return df
         
     st.write("🗺️ Geocodificando empresas...")
     
-    geolocator = Nominatim(user_agent="algodoeiras_mt_batch_v1")
-    
     resultados = []
     total_empresas = len(df)
+    
+    if total_empresas == 0:
+        return pd.DataFrame()
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -250,8 +311,18 @@ def geocodificar_empresas_em_lote(df):
         status_text.text(f"Processando: {row['Nome'][:30]}... ({index + 1}/{total_empresas})")
         
         # Geocodifica cada empresa
-        empresa_geocodificada = geocodificar_empresa(row['Nome'])
+        empresa_geocodificada = geocodificar_empresa(
+            row['Nome'], 
+            row.get('Cidade', 'Mato Grosso'),
+            row.get('Estado', 'MT'),
+            row.get('Tipo', 'Algodoeira')
+        )
+        
         if empresa_geocodificada:
+            # Mantém os dados originais
+            empresa_geocodificada['Telefone'] = row.get('Telefone', 'Não Informado')
+            empresa_geocodificada['Email'] = row.get('Email', 'Não Informado')
+            empresa_geocodificada['Tipo'] = row.get('Tipo', 'Algodoeira')
             empresa_geocodificada['Fonte'] = 'Web Scraping'
             resultados.append(empresa_geocodificada)
         
@@ -274,29 +345,40 @@ if 'empresas_mapeadas' not in st.session_state:
     st.session_state.empresas_mapeadas = pd.DataFrame()
 
 # ==============================================================================
-# SEÇÃO 1: WEB SCRAPING AUTOMÁTICO
+# SEÇÃO 1: WEB SCRAPING ESPECÍFICO
 # ==============================================================================
 
-st.header("🔍 Coleta Automática")
+st.header("🔍 Coleta Automática por Categoria")
 
-col1, col2 = st.columns([3, 1])
+col1, col2 = st.columns(2)
+
 with col1:
-    if st.button("🔄 Executar Web Scraping", type="primary", use_container_width=True):
-        with st.spinner('Coletando e processando dados da AMPA...'):
-            df_scraping = carregar_dados_web_scraping()
-            if not df_scraping.empty:
-                st.session_state.empresas_mapeadas = df_scraping
+    if st.button("🏢 Coletar Cooperativas", type="primary", use_container_width=True):
+        with st.spinner('Coletando dados de cooperativas...'):
+            df_cooperativas = carregar_cooperativas()
+            if not df_cooperativas.empty:
+                st.session_state.empresas_mapeadas = df_cooperativas
                 st.rerun()
             else:
-                st.error("❌ Web scraping não retornou dados. Use a inserção manual abaixo.")
+                st.error("❌ Não foi possível coletar cooperativas")
 
 with col2:
-    if st.button("🗑️ Limpar Dados", use_container_width=True):
-        st.session_state.empresas_mapeadas = pd.DataFrame()
-        st.rerun()
+    if st.button("👥 Coletar Associados Ativos", type="primary", use_container_width=True):
+        with st.spinner('Coletando dados de associados ativos...'):
+            df_associados = carregar_associados_ativos()
+            if not df_associados.empty:
+                st.session_state.empresas_mapeadas = df_associados
+                st.rerun()
+            else:
+                st.error("❌ Não foi possível coletar associados ativos")
+
+# Botão para limpar dados
+if st.button("🗑️ Limpar Todos os Dados", use_container_width=True):
+    st.session_state.empresas_mapeadas = pd.DataFrame()
+    st.rerun()
 
 # ==============================================================================
-# SEÇÃO 2: INSERÇÃO MANUAL MELHORADA
+# SEÇÃO 2: INSERÇÃO MANUAL
 # ==============================================================================
 
 st.header("✍️ Inserção Manual")
@@ -305,6 +387,7 @@ st.header("✍️ Inserção Manual")
 empresas_sugeridas = [
     "Algodoeira Reunidas",
     "3ab Produtos Agricolas S.A.",
+    "Cooperativa Aliança dos Produtores do Parecis",
     "Amaggi Agro",
     "Bom Futuro Agro",
     "Scheffer Agro",
@@ -316,27 +399,32 @@ empresas_sugeridas = [
 ]
 
 with st.form("form_insercao_manual"):
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         nome_empresa = st.selectbox(
             "Nome da Empresa:",
             options=empresas_sugeridas,
             index=0,
-            help="Selecione ou digite o nome da empresa algodoeira"
+            help="Selecione ou digite o nome da empresa"
         )
         
-        # Campo para digitar manualmente
         nome_custom = st.text_input(
             "Ou digite o nome manualmente:",
             placeholder="Ex: Algodoeira São João",
             help="Digite o nome completo da empresa"
         )
         
-        # Usa o nome customizado se fornecido
         nome_final = nome_custom if nome_custom else nome_empresa
     
     with col2:
+        tipo_empresa = st.selectbox(
+            "Tipo:",
+            options=["Algodoeira", "Cooperativa", "Associado Ativo", "Outro"],
+            index=0
+        )
+    
+    with col3:
         cidade_empresa = st.text_input(
             "Cidade:",
             value="Mato Grosso",
@@ -347,7 +435,12 @@ with st.form("form_insercao_manual"):
     
     if submitted and nome_final:
         with st.spinner(f'Buscando localização de {nome_final}...'):
-            empresa_geocodificada = geocodificar_empresa(nome_final, cidade_empresa)
+            empresa_geocodificada = geocodificar_empresa(
+                nome_final, 
+                cidade_empresa, 
+                "MT", 
+                tipo_empresa
+            )
             
             if empresa_geocodificada:
                 nova_empresa_df = pd.DataFrame([empresa_geocodificada])
@@ -355,7 +448,6 @@ with st.form("form_insercao_manual"):
                 if st.session_state.empresas_mapeadas.empty:
                     st.session_state.empresas_mapeadas = nova_empresa_df
                 else:
-                    # Evita duplicatas
                     nomes_existentes = st.session_state.empresas_mapeadas['Nome'].values
                     if nome_final not in nomes_existentes:
                         st.session_state.empresas_mapeadas = pd.concat(
@@ -388,27 +480,56 @@ if not st.session_state.empresas_mapeadas.empty:
         st.metric("Cidades", cidades_count)
     
     with col3:
+        if 'Tipo' in df_final.columns:
+            tipos_count = df_final['Tipo'].nunique()
+        else:
+            tipos_count = 1
+        st.metric("Tipos Diferentes", tipos_count)
+    
+    with col4:
         if 'Fonte' in df_final.columns:
             web_count = len(df_final[df_final['Fonte'] == 'Web Scraping'])
         else:
             web_count = 0
-        st.metric("Web Scraping", web_count)
+        st.metric("Coleta Automática", web_count)
     
-    with col4:
-        if 'Fonte' in df_final.columns:
-            manual_count = len(df_final[df_final['Fonte'].str.contains('Manual')])
+    # Filtros
+    st.subheader("🎛️ Filtros")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if 'Tipo' in df_final.columns and not df_final.empty:
+            tipos = ["Exibir Todos"] + sorted(df_final['Tipo'].unique().tolist())
         else:
-            manual_count = len(df_final)
-        st.metric("Manuais", manual_count)
+            tipos = ["Exibir Todos"]
+        tipo_selecionado = st.selectbox("Filtrar por Tipo:", tipos)
+    
+    with col2:
+        if 'Cidade' in df_final.columns and not df_final.empty:
+            cidades = ["Exibir Todas"] + sorted(df_final['Cidade'].unique().tolist())
+        else:
+            cidades = ["Exibir Todas"]
+        cidade_selecionada = st.selectbox("Filtrar por Cidade:", cidades)
+    
+    # Aplica filtros
+    df_filtrado = df_final.copy()
+    
+    if tipo_selecionado != "Exibir Todos" and 'Tipo' in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado['Tipo'] == tipo_selecionado]
+    
+    if cidade_selecionada != "Exibir Todas" and 'Cidade' in df_filtrado.columns:
+        df_filtrado = df_filtrado[df_filtrado['Cidade'] == cidade_selecionada]
     
     # Tabela de dados
     st.subheader("📋 Lista de Empresas")
-    colunas_para_mostrar = ['Nome', 'Cidade', 'Fonte']
-    if 'Endereco' in df_final.columns:
-        colunas_para_mostrar.append('Endereco')
+    colunas_para_mostrar = ['Nome', 'Tipo', 'Cidade', 'Telefone']
+    if 'Email' in df_filtrado.columns:
+        colunas_para_mostrar.append('Email')
+    if 'Fonte' in df_filtrado.columns:
+        colunas_para_mostrar.append('Fonte')
     
     st.dataframe(
-        df_final[colunas_para_mostrar].reset_index(drop=True),
+        df_filtrado[colunas_para_mostrar].reset_index(drop=True),
         use_container_width=True,
         height=400
     )
@@ -417,7 +538,7 @@ if not st.session_state.empresas_mapeadas.empty:
     st.subheader("🗺️ Mapa de Localizações")
     
     # Filtra empresas com coordenadas válidas
-    df_mapa = df_final.dropna(subset=['Latitude', 'Longitude']).copy()
+    df_mapa = df_filtrado.dropna(subset=['Latitude', 'Longitude']).copy()
     
     if df_mapa.empty:
         st.warning("Nenhuma empresa com coordenadas válidas para exibir no mapa.")
@@ -429,21 +550,26 @@ if not st.session_state.empresas_mapeadas.empty:
         
         mapa = folium.Map(location=map_center, zoom_start=7)
 
+        # Cores por tipo de empresa
+        cores = {
+            'Cooperativa': 'blue',
+            'Associado Ativo': 'green',
+            'Algodoeira': 'red',
+            'Outro': 'orange'
+        }
+
         for index, empresa in df_mapa.iterrows():
-            # Define cor baseada na fonte
-            if 'Manual' in str(empresa.get('Fonte', '')):
-                cor = 'blue'
-                icone = 'user'
-            else:
-                cor = 'green' 
-                icone = 'industry'
+            tipo = empresa.get('Tipo', 'Algodoeira')
+            cor = cores.get(tipo, 'gray')
             
             popup_html = f"""
             <div style="min-width: 250px">
                 <h4>{empresa['Nome']}</h4>
                 <hr>
+                <b>🏢 Tipo:</b> {tipo}<br>
                 <b>📍 Cidade:</b> {empresa.get('Cidade', 'Não informada')}<br>
-                <b>🏢 Tipo:</b> {empresa.get('Tipo', 'Algodoeira')}<br>
+                <b>📞 Telefone:</b> {empresa.get('Telefone', 'Não Informado')}<br>
+                <b>📧 Email:</b> {empresa.get('Email', 'Não Informado')}<br>
                 <b>🔍 Fonte:</b> {empresa.get('Fonte', 'Manual')}<br>
                 <b>🎯 Endereço:</b> {empresa.get('Endereco', 'Localização aproximada')}
             </div>
@@ -452,8 +578,8 @@ if not st.session_state.empresas_mapeadas.empty:
             folium.Marker(
                 location=[empresa['Latitude'], empresa['Longitude']],
                 popup=folium.Popup(popup_html, max_width=300),
-                tooltip=empresa['Nome'],
-                icon=folium.Icon(color=cor, icon=icone, prefix='fa')
+                tooltip=f"{empresa['Nome']} ({tipo})",
+                icon=folium.Icon(color=cor, icon='industry', prefix='fa')
             ).add_to(mapa)
         
         st_folium(mapa, width='100%', height=500, returned_objects=[])
@@ -462,7 +588,7 @@ if not st.session_state.empresas_mapeadas.empty:
     st.download_button(
         label="📥 Baixar Dados Completos (CSV)",
         data=df_final.to_csv(index=False, encoding='utf-8-sig'),
-        file_name="algodoeiras_mato_grosso.csv",
+        file_name="empresas_algodao_mato_grosso.csv",
         mime="text/csv",
         use_container_width=True
     )
@@ -471,39 +597,41 @@ else:
     st.info("""
     👆 **Para começar:**
     
-    1. **Clique em 'Executar Web Scraping'** para tentar coleta automática
-    2. **Se não funcionar**, use a seção de inserção manual abaixo
-    3. **Selecione uma empresa** da lista ou **digite o nome** manualmente
-    4. **Clique em 'Buscar e Adicionar ao Mapa'**
+    1. **Coleta Automática:** Escolha entre cooperativas ou associados ativos
+    2. **Inserção Manual:** Adicione empresas específicas manualmente
+    3. **Filtros:** Use os filtros para explorar os dados
+    4. **Mapa:** Visualize todas as localizações no mapa interativo
     """)
 
 # ==============================================================================
 # INSTRUÇÕES
 # ==============================================================================
 
-with st.expander("📖 Guia de Uso"):
+with st.expander("📖 Guia de Uso Completo"):
     st.markdown("""
-    **🎯 Como usar este aplicativo:**
+    **🎯 Fontes de Dados:**
     
-    **1. Web Scraping Automático** (Primeira tentativa)
-    - Clique em "Executar Web Scraping"
-    - O sistema tenta coletar dados do site da AMPA
-    - Se funcionar, você terá uma base de empresas
+    - **🏢 Cooperativas:** https://ampa.com.br/consulta-cooperativas/
+      - Estrutura: Fantasia, Cooperativas, Email, Fone
+      - Exemplo: CAAP, Cooperativa Aliança dos Produtores do Parecis
     
-    **2. Inserção Manual** (Quando o scraping falha)
-    - Selecione uma empresa da lista sugerida
-    - Ou digite o nome manualmente no campo abaixo
-    - Clique em "Buscar e Adicionar ao Mapa"
-    - O sistema sempre retorna uma localização (exata ou aproximada)
+    - **👥 Associados Ativos:** https://ampa.com.br/consulta-associados-ativos/  
+      - Estrutura: Associado, Telefone
+      - Exemplo: Alexandre Roberto Paludo, (00) 0000-0000
     
-    **🔧 Solução de Problemas:**
+    **🔧 Funcionalidades:**
     
-    - **Web scraping retorna poucas empresas?** → Use a inserção manual
-    - **Geocodificação não encontra localização?** → Usamos coordenadas aproximadas de MT
-    - **Empresa não está na lista?** → Digite manualmente no campo customizado
+    1. **Coleta Específica por Categoria** - Botões separados para cada tipo
+    2. **Inserção Manual Flexível** - Com lista sugerida e campo customizado
+    3. **Filtros Avançados** - Por tipo e cidade
+    4. **Mapa Colorido** - Cores diferentes para cada tipo de empresa
+    5. **Exportação de Dados** - Download em CSV
     
-    **📊 Sobre os dados:**
-    - Marcadores **verdes** = Web scraping
-    - Marcadores **azuis** = Inserção manual
-    - Localizações são sempre fornecidas (exatas ou aproximadas)
+    **📊 Legenda do Mapa:**
+    - 🔵 **Azul**: Cooperativas
+    - 🟢 **Verde**: Associados Ativos  
+    - 🔴 **Vermelho**: Algodoeiras
+    - 🟠 **Laranja**: Outros tipos
+    
+    **💡 Dica:** Comece coletando as cooperativas, depois os associados ativos!
     """)
