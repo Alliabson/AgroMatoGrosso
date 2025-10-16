@@ -60,7 +60,7 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
     """
     Geocodifica uma empresa individual com múltiplas estratégias
     """
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v5")
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v6")
     
     try:
         # Estratégias de busca melhoradas
@@ -135,13 +135,13 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT", tipo="Algodoei
         }
 
 # ==============================================================================
-# WEB SCRAPING ESPECÍFICO PARA CADA PÁGINA
+# WEB SCRAPING ROBUSTO - MÚLTIPLAS ESTRATÉGIAS
 # ==============================================================================
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def carregar_cooperativas():
     """
-    Web scraping específico para a página de cooperativas
+    Web scraping robusto para cooperativas com múltiplas estratégias
     """
     st.write("🏢 Coletando dados de cooperativas...")
     
@@ -151,6 +151,8 @@ def carregar_cooperativas():
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
         }
         
         response = requests.get(url, headers=headers, timeout=30)
@@ -158,55 +160,96 @@ def carregar_cooperativas():
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Procura por tabelas na página
+        # ESTRATÉGIA 1: Buscar por tabelas tradicionais
         tabelas = soup.find_all('table')
+        st.write(f"🔍 Encontradas {len(tabelas)} tabelas na página")
         
-        if not tabelas:
-            st.warning("❌ Nenhuma tabela encontrada na página de cooperativas")
-            return pd.DataFrame()
+        # ESTRATÉGIA 2: Buscar por divs que podem conter tabelas
+        divs_com_tabelas = soup.find_all('div', class_=re.compile(r'table|wrapper|content', re.I))
+        st.write(f"🔍 Encontrados {len(divs_com_tabelas)} divs que podem conter tabelas")
         
-        for tabela in tabelas:
-            # Encontra todas as linhas da tabela
-            linhas = tabela.find_all('tr')
+        # ESTRATÉGIA 3: Buscar diretamente por dados estruturados
+        # Procura por padrões que parecem dados de cooperativas
+        texto_completo = soup.get_text()
+        linhas = texto_completo.split('\n')
+        
+        st.write("📝 Analisando conteúdo da página...")
+        
+        # Padrões para identificar cooperativas
+        padroes_cooperativas = [
+            r'([A-Z][A-Za-z\s&]+)\s+([A-Z][A-Za-z\s]+Cooperativa[A-Za-z\s]+)\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+(\(?\d{2}\)?[\s-]?\d{4,5}[\s-]?\d{4})',
+            r'([A-Z][A-Za-z\s&]+)\s+([A-Z][A-Za-z\s]+)\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s+(\(?\d{2}\)?[\s-]?\d{4,5}[\s-]?\d{4})',
+        ]
+        
+        cooperativas_encontradas = 0
+        
+        for linha in linhas:
+            linha_limpa = linha.strip()
             
-            # Pega o cabeçalho para entender a estrutura
-            if len(linhas) > 0:
-                cabecalho = [th.get_text(strip=True) for th in linhas[0].find_all(['th', 'td'])]
-                st.write(f"📋 Estrutura da tabela: {cabecalho}")
-            
-            # Processa as linhas de dados (pula o cabeçalho)
-            for linha in linhas[1:]:
-                celulas = linha.find_all(['td', 'th'])
-                if len(celulas) >= 2:  # Pelo menos 2 colunas
-                    # Diferentes estruturas possíveis
-                    if len(celulas) >= 4:
-                        # Estrutura: Fantasia, Cooperativas, Email, Fone
-                        fantasia = celulas[0].get_text(strip=True)
-                        nome_cooperativa = celulas[1].get_text(strip=True)
-                        email = celulas[2].get_text(strip=True) if len(celulas) > 2 else "Não Informado"
-                        telefone = celulas[3].get_text(strip=True) if len(celulas) > 3 else "Não Informado"
-                        
-                        # Prefere o nome da cooperativa, mas usa fantasia se necessário
-                        nome_final = nome_cooperativa if nome_cooperativa else fantasia
-                        
-                    elif len(celulas) == 2:
-                        # Estrutura simples: Nome, Telefone
-                        nome_final = celulas[0].get_text(strip=True)
-                        telefone = celulas[1].get_text(strip=True)
-                        email = "Não Informado"
-                    
-                    else:
-                        continue
-                    
-                    if nome_final and is_pessoa_juridica(nome_final):
+            # Pula linhas muito curtas ou claramente não-dados
+            if len(linha_limpa) < 10 or len(linha_limpa) > 200:
+                continue
+                
+            # Verifica se parece ser uma linha de dados de cooperativa
+            if any(palavra in linha_limpa.lower() for palavra in ['cooperativa', 'caap', 'email', '@', '(', ')']):
+                # Tenta extrair dados usando regex
+                for padrao in padroes_cooperativas:
+                    matches = re.findall(padrao, linha_limpa)
+                    if matches:
+                        for match in matches:
+                            if len(match) >= 2:
+                                fantasia = match[0].strip()
+                                nome_cooperativa = match[1].strip()
+                                email = match[2] if len(match) > 2 else "Não Informado"
+                                telefone = match[3] if len(match) > 3 else "Não Informado"
+                                
+                                # Prefere o nome completo da cooperativa
+                                nome_final = nome_cooperativa if 'cooperativa' in nome_cooperativa.lower() else fantasia
+                                
+                                if nome_final and is_pessoa_juridica(nome_final):
+                                    lista_cooperativas.append({
+                                        'Nome': nome_final,
+                                        'Telefone': telefone,
+                                        'Email': email,
+                                        'Tipo': 'Cooperativa',
+                                        'Cidade': 'Mato Grosso',
+                                        'Estado': 'MT'
+                                    })
+                                    cooperativas_encontradas += 1
+                
+                # Se não encontrou pelo regex, mas a linha parece ser uma cooperativa
+                if 'cooperativa' in linha_limpa.lower() and cooperativas_encontradas == 0:
+                    # Tenta extrair o nome da cooperativa manualmente
+                    partes = linha_limpa.split()
+                    nome_coop = ' '.join(partes[:4])  # Pega as primeiras palavras
+                    if is_pessoa_juridica(nome_coop):
                         lista_cooperativas.append({
-                            'Nome': nome_final,
-                            'Telefone': telefone,
-                            'Email': email,
+                            'Nome': nome_coop,
+                            'Telefone': "Não Informado",
+                            'Email': "Não Informado",
                             'Tipo': 'Cooperativa',
                             'Cidade': 'Mato Grosso',
                             'Estado': 'MT'
                         })
+                        cooperativas_encontradas += 1
+        
+        # ESTRATÉGIA 4: Buscar em elementos específicos
+        elementos_texto = soup.find_all(['p', 'div', 'span', 'li'])
+        for elemento in elementos_texto:
+            texto = elemento.get_text(strip=True)
+            if 'cooperativa' in texto.lower() and len(texto) > 10 and len(texto) < 100:
+                if is_pessoa_juridica(texto):
+                    lista_cooperativas.append({
+                        'Nome': texto,
+                        'Telefone': "Não Informado",
+                        'Email': "Não Informado",
+                        'Tipo': 'Cooperativa',
+                        'Cidade': 'Mato Grosso',
+                        'Estado': 'MT'
+                    })
+                    cooperativas_encontradas += 1
+        
+        st.write(f"📊 Total de cooperativas identificadas: {cooperativas_encontradas}")
         
         if lista_cooperativas:
             df = pd.DataFrame(lista_cooperativas)
@@ -214,7 +257,16 @@ def carregar_cooperativas():
             st.success(f"✅ Cooperativas: {len(df)} encontradas")
             return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("⚠️ Nenhuma cooperativa encontrada")
+            st.warning("""
+            ⚠️ Nenhuma cooperativa encontrada automaticamente. 
+            
+            **Possíveis causas:**
+            - A estrutura da página mudou
+            - Os dados estão em um formato diferente
+            - A página requer JavaScript
+            
+            **Solução:** Use a inserção manual abaixo para adicionar cooperativas específicas.
+            """)
             return pd.DataFrame()
             
     except Exception as e:
@@ -224,7 +276,7 @@ def carregar_cooperativas():
 @st.cache_data(show_spinner=False, ttl=3600)
 def carregar_associados_ativos():
     """
-    Web scraping específico para a página de associados ativos
+    Web scraping robusto para associados ativos com múltiplas estratégias
     """
     st.write("👥 Coletando dados de associados ativos...")
     
@@ -234,6 +286,8 @@ def carregar_associados_ativos():
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
         }
         
         response = requests.get(url, headers=headers, timeout=30)
@@ -241,29 +295,36 @@ def carregar_associados_ativos():
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Procura por tabelas na página
-        tabelas = soup.find_all('table')
+        # ESTRATÉGIA 1: Buscar por qualquer elemento que possa conter dados
+        elementos_potenciais = soup.find_all(['div', 'p', 'span', 'li', 'td', 'tr'])
         
-        if not tabelas:
-            st.warning("❌ Nenhuma tabela encontrada na página de associados")
-            return pd.DataFrame()
+        st.write(f"🔍 Analisando {len(elementos_potenciais)} elementos na página...")
         
-        for tabela in tabelas:
-            # Encontra todas as linhas da tabela
-            linhas = tabela.find_all('tr')
+        associados_encontrados = 0
+        padrao_telefone = r'\(?\d{2}\)?[\s-]?\d{4,5}[\s-]?\d{4}'
+        
+        for elemento in elementos_potenciais:
+            texto = elemento.get_text(strip=True)
             
-            # Processa as linhas de dados
-            for linha in linhas:
-                celulas = linha.find_all(['td', 'th'])
-                if len(celulas) >= 2:  # Pelo menos 2 colunas
-                    nome = celulas[0].get_text(strip=True)
-                    telefone = celulas[1].get_text(strip=True) if len(celulas) > 1 else "Não Informado"
+            # Filtra elementos muito curtos ou muito longos
+            if len(texto) < 5 or len(texto) > 100:
+                continue
+                
+            # Pula elementos que são claramente não-nomes
+            if texto.lower() in ['associado', 'telefone', 'nome', 'empresa', 'endereço']:
+                continue
+                
+            # Verifica se tem formato de telefone (indicando que pode ser uma linha de dados)
+            tem_telefone = re.search(padrao_telefone, texto)
+            
+            # Se tem telefone, provavelmente é uma linha de dados
+            if tem_telefone:
+                # Tenta extrair o nome (tudo antes do telefone)
+                partes = texto.split(tem_telefone.group())
+                if partes and partes[0].strip():
+                    nome = partes[0].strip()
+                    telefone = tem_telefone.group()
                     
-                    # Pula cabeçalhos e linhas vazias
-                    if not nome or nome.lower() in ['associado', 'nome', 'empresa']:
-                        continue
-                    
-                    # Filtra apenas pessoas jurídicas
                     if is_pessoa_juridica(nome):
                         lista_associados.append({
                             'Nome': nome,
@@ -273,6 +334,40 @@ def carregar_associados_ativos():
                             'Cidade': 'Mato Grosso',
                             'Estado': 'MT'
                         })
+                        associados_encontrados += 1
+            
+            # Se não tem telefone, mas parece ser um nome de empresa
+            elif is_pessoa_juridica(texto):
+                lista_associados.append({
+                    'Nome': texto,
+                    'Telefone': "Não Informado",
+                    'Email': "Não Informado",
+                    'Tipo': 'Associado Ativo',
+                    'Cidade': 'Mato Grosso',
+                    'Estado': 'MT'
+                })
+                associados_encontrados += 1
+        
+        # ESTRATÉGIA 2: Buscar em todo o texto da página
+        texto_completo = soup.get_text()
+        linhas = texto_completo.split('\n')
+        
+        for linha in linhas:
+            linha_limpa = linha.strip()
+            if len(linha_limpa) > 5 and len(linha_limpa) < 100:
+                # Verifica se é um nome de empresa
+                if is_pessoa_juridica(linha_limpa) and linha_limpa not in [a['Nome'] for a in lista_associados]:
+                    lista_associados.append({
+                        'Nome': linha_limpa,
+                        'Telefone': "Não Informado",
+                        'Email': "Não Informado",
+                        'Tipo': 'Associado Ativo',
+                        'Cidade': 'Mato Grosso',
+                        'Estado': 'MT'
+                    })
+                    associados_encontrados += 1
+        
+        st.write(f"📊 Total de associados identificados: {associados_encontrados}")
         
         if lista_associados:
             df = pd.DataFrame(lista_associados)
@@ -280,7 +375,16 @@ def carregar_associados_ativos():
             st.success(f"✅ Associados ativos: {len(df)} encontrados")
             return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("⚠️ Nenhum associado ativo (PJ) encontrado")
+            st.warning("""
+            ⚠️ Nenhum associado ativo (PJ) encontrado automaticamente.
+            
+            **Possíveis causas:**
+            - A estrutura da página mudou
+            - Os dados estão em formato dinâmico (JavaScript)
+            - A lista pode conter principalmente pessoas físicas
+            
+            **Solução:** Use a inserção manual abaixo para adicionar empresas específicas.
+            """)
             return pd.DataFrame()
             
     except Exception as e:
@@ -357,20 +461,29 @@ with col1:
         with st.spinner('Coletando dados de cooperativas...'):
             df_cooperativas = carregar_cooperativas()
             if not df_cooperativas.empty:
-                st.session_state.empresas_mapeadas = df_cooperativas
+                # Adiciona ao existente em vez de substituir
+                if st.session_state.empresas_mapeadas.empty:
+                    st.session_state.empresas_mapeadas = df_cooperativas
+                else:
+                    st.session_state.empresas_mapeadas = pd.concat([
+                        st.session_state.empresas_mapeadas, 
+                        df_cooperativas
+                    ], ignore_index=True).drop_duplicates(subset=['Nome'])
                 st.rerun()
-            else:
-                st.error("❌ Não foi possível coletar cooperativas")
 
 with col2:
     if st.button("👥 Coletar Associados Ativos", type="primary", use_container_width=True):
         with st.spinner('Coletando dados de associados ativos...'):
             df_associados = carregar_associados_ativos()
             if not df_associados.empty:
-                st.session_state.empresas_mapeadas = df_associados
+                if st.session_state.empresas_mapeadas.empty:
+                    st.session_state.empresas_mapeadas = df_associados
+                else:
+                    st.session_state.empresas_mapeadas = pd.concat([
+                        st.session_state.empresas_mapeadas, 
+                        df_associados
+                    ], ignore_index=True).drop_duplicates(subset=['Nome'])
                 st.rerun()
-            else:
-                st.error("❌ Não foi possível coletar associados ativos")
 
 # Botão para limpar dados
 if st.button("🗑️ Limpar Todos os Dados", use_container_width=True):
@@ -601,6 +714,8 @@ else:
     2. **Inserção Manual:** Adicione empresas específicas manualmente
     3. **Filtros:** Use os filtros para explorar os dados
     4. **Mapa:** Visualize todas as localizações no mapa interativo
+    
+    💡 **Dica:** Se a coleta automática não funcionar, use a inserção manual para adicionar empresas específicas.
     """)
 
 # ==============================================================================
@@ -633,5 +748,77 @@ with st.expander("📖 Guia de Uso Completo"):
     - 🔴 **Vermelho**: Algodoeiras
     - 🟠 **Laranja**: Outros tipos
     
+    **🛠️ Solução de Problemas:**
+    
+    - **Web scraping não funciona?** → Use a inserção manual
+    - **Localização não encontrada?** → Usamos coordenadas aproximadas de MT
+    - **Dados incompletos?** → Combine coleta automática com manual
+    
     **💡 Dica:** Comece coletando as cooperativas, depois os associados ativos!
     """)
+
+# ==============================================================================
+# CARREGAMENTO DE DADOS EXTERNOS
+# ==============================================================================
+
+st.sidebar.header("📤 Carregar Dados Externos")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Carregar lista de empresas (CSV):",
+    type=['csv'],
+    help="CSV deve ter coluna 'Nome' com os nomes das empresas"
+)
+
+if uploaded_file is not None:
+    try:
+        df_upload = pd.read_csv(uploaded_file)
+        if 'Nome' in df_upload.columns:
+            st.sidebar.success(f"📊 {len(df_upload)} empresas carregadas")
+            
+            if st.sidebar.button("🗺️ Geocodificar Empresas do Arquivo"):
+                with st.spinner('Processando empresas do arquivo...'):
+                    # Filtra apenas PJs
+                    df_upload['É_PJ'] = df_upload['Nome'].apply(is_pessoa_juridica)
+                    df_pjs = df_upload[df_upload['É_PJ']].copy()
+                    
+                    if not df_pjs.empty:
+                        st.sidebar.write(f"🏢 {len(df_pjs)} empresas são PJs")
+                        
+                        # Prepara dados para geocodificação
+                        df_para_geocodificar = pd.DataFrame({
+                            'Nome': df_pjs['Nome'],
+                            'Telefone': df_pjs.get('Telefone', 'Não Informado'),
+                            'Email': df_pjs.get('Email', 'Não Informado'),
+                            'Tipo': df_pjs.get('Tipo', 'Algodoeira'),
+                            'Cidade': 'Mato Grosso',
+                            'Estado': 'MT'
+                        })
+                        
+                        df_geocodificado = geocodificar_empresas_em_lote(df_para_geocodificar)
+                        
+                        if not df_geocodificado.empty:
+                            # Adiciona às empresas existentes
+                            if st.session_state.empresas_mapeadas.empty:
+                                st.session_state.empresas_mapeadas = df_geocodificado
+                            else:
+                                # Remove duplicatas
+                                nomes_existentes = set(st.session_state.empresas_mapeadas['Nome'].values)
+                                df_novas = df_geocodificado[~df_geocodificado['Nome'].isin(nomes_existentes)]
+                                
+                                if not df_novas.empty:
+                                    st.session_state.empresas_mapeadas = pd.concat(
+                                        [st.session_state.empresas_mapeadas, df_novas], 
+                                        ignore_index=True
+                                    )
+                                    st.sidebar.success(f"✅ {len(df_novas)} novas empresas adicionadas!")
+                                else:
+                                    st.sidebar.info("ℹ️ Todas as empresas do arquivo já estão mapeadas")
+                            
+                            st.rerun()
+                    else:
+                        st.sidebar.warning("ℹ️ Nenhuma pessoa jurídica encontrada no arquivo")
+        else:
+            st.sidebar.error("❌ Arquivo deve ter coluna 'Nome'")
+            
+    except Exception as e:
+        st.sidebar.error(f"❌ Erro ao processar arquivo: {e}")
