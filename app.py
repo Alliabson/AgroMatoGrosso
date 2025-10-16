@@ -1,123 +1,114 @@
 import streamlit as st
 from streamlit_folium import st_folium
-import requests
 import pandas as pd
 import folium
-import json
 
-# --- CONFIGURAÇÕES E FUNÇÃO DE BUSCA (sem alterações) ---
-
-# Endpoint da API Overpass
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-
-# Tags do OpenStreetMap para a busca
-TAGS_DE_BUSCA = {
-    '"industrial"': '"textile"',
-    '"product"': '"cotton"'
-}
-
-# Usamos o @st.cache_data para que o Streamlit armazene os resultados da busca.
-# Se o usuário buscar pela mesma cidade de novo, o resultado é instantâneo.
+# ==============================================================================
+# PASSO 1: NOSSA BASE DE DADOS
+# ==============================================================================
+# Esta função cria e retorna nossa lista de empresas.
+# No futuro, você pode modificar esta função para ler dados de um arquivo Excel.
+# O decorador @st.cache_data garante que os dados sejam carregados apenas uma vez.
 @st.cache_data
-def buscar_empresas_osm(cidade):
+def carregar_dados():
     """
-    Busca por locais em uma cidade usando a Overpass API do OpenStreetMap.
+    Cria e retorna um DataFrame do Pandas com os dados das empresas.
+    As coordenadas de Latitude e Longitude são essenciais para o mapa.
     """
-    
-    query_parts = ""
-    for key, value in TAGS_DE_BUSCA.items():
-        query_parts += f"""
-        node[{key}={value}](area.searchArea);
-        way[{key}={value}](area.searchArea);
-        relation[{key}={value}](area.searchArea);
-        """
+    dados_empresas = [
+        {"Nome": "Algodoeira XXX de Sapezal", "Tipo": "Algodoeira", "Cidade": "Sapezal", "Estado": "MT", "Latitude": -13.5415, "Longitude": -58.8596},
+        {"Nome": "Pluma Agroavícola Ltda", "Tipo": "Algodoeira", "Cidade": "Sapezal", "Estado": "MT", "Latitude": -13.5580, "Longitude": -58.8475},
+        {"Nome": "Grão Forte Armazéns", "Tipo": "Armazém de Grãos", "Cidade": "Sapezal", "Estado": "MT", "Latitude": -13.5299, "Longitude": -58.8683},
+        {"Nome": "Cooperativa Agroindustrial Parecis", "Tipo": "Algodoeira", "Cidade": "Campo Novo do Parecis", "Estado": "MT", "Latitude": -13.6751, "Longitude": -57.8864},
+        {"Nome": "Sementes Girassol", "Tipo": "Produtor de Sementes", "Cidade": "Campo Novo do Parecis", "Estado": "MT", "Latitude": -13.6645, "Longitude": -57.8912},
+        {"Nome": "Agroindustrial GGF", "Tipo": "Algodoeira", "Cidade": "Sorriso", "Estado": "MT", "Latitude": -12.5447, "Longitude": -55.7175},
+        {"Nome": "Cargill Armazéns Gerais", "Tipo": "Armazém de Grãos", "Cidade": "Sorriso", "Estado": "MT", "Latitude": -12.5591, "Longitude": -55.7288},
+        {"Nome": "Gigante Têxtil S.A.", "Tipo": "Algodoeira", "Cidade": "Rondonópolis", "Estado": "MT", "Latitude": -16.4700, "Longitude": -54.6355}
+    ]
+    # Converte a lista de dicionários em um DataFrame do Pandas
+    return pd.DataFrame(dados_empresas)
 
-    overpass_query = f"""
-    [out:json];
-    area[name="{cidade}"]->.searchArea;
-    (
-      {query_parts}
-    );
-    out center;
-    """
-    
-    try:
-        response = requests.get(OVERPASS_URL, params={'data': overpass_query})
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException as e:
-        # Em vez de imprimir no console, retornamos o erro para a interface
-        st.error(f"Erro de conexão com a API: {e}")
-        return pd.DataFrame()
-    except json.JSONDecodeError:
-        st.error(f"Não foi possível decodificar a resposta da API. A cidade pode não ter sido encontrada.")
-        return pd.DataFrame()
+# ==============================================================================
+# PASSO 2: CONFIGURAÇÃO DA INTERFACE DO APLICATIVO
+# ==============================================================================
 
-    empresas_encontradas = []
-    for element in data.get('elements', []):
-        tags = element.get('tags', {})
-        empresa_info = {
-            'Nome': tags.get('name', 'Nome não disponível'),
-            'Latitude': element.get('lat') or element.get('center', {}).get('lat'),
-            'Longitude': element.get('lon') or element.get('center', {}).get('lon'),
-            'Tags': str(tags)
-        }
-        if empresa_info['Latitude'] and empresa_info['Longitude']:
-            empresas_encontradas.append(empresa_info)
-    
-    return pd.DataFrame(empresas_encontradas)
+# Define o título da página e o layout (wide ocupa a largura inteira da tela)
+st.set_page_config(page_title="Mapa do Agronegócio", layout="wide")
 
-# --- INTERFACE DO APLICATIVO STREAMLIT ---
+# Título principal da aplicação
+st.title("🗺️ Mapa Interativo do Agronegócio")
 
-# Título da página
-st.set_page_config(page_title="Buscador de Algodoeiras", layout="wide")
-st.title("🗺️ Buscador de Empresas Algodoeiras")
-st.markdown("Encontre indústrias do ramo algodoeiro em cidades do Brasil utilizando dados do OpenStreetMap.")
+# Texto descritivo
+st.markdown("Selecione o tipo de empresa na barra lateral para visualizar no mapa.")
 
-# Campo de texto para o usuário inserir a cidade
-cidade_input = st.text_input(
-    "Digite o nome da cidade e estado (ex: Sapezal, MT)", 
-    "Sapezal, MT" # Valor padrão para facilitar o teste
+# Carrega os dados usando a função que criamos
+df_empresas = carregar_dados()
+
+# ==============================================================================
+# PASSO 3: CRIAÇÃO DO FILTRO NA BARRA LATERAL
+# ==============================================================================
+
+# Adiciona um cabeçalho à barra lateral
+st.sidebar.header("Filtros")
+
+# Pega os valores únicos da coluna 'Tipo' para criar as opções do filtro
+# A função sorted() coloca as opções em ordem alfabética
+# Adicionamos "Exibir Todas" para dar ao usuário a opção de limpar o filtro
+tipos_disponiveis = ["Exibir Todas"] + sorted(df_empresas['Tipo'].unique().tolist())
+
+# Cria o componente de menu suspenso (selectbox)
+tipo_selecionado = st.sidebar.selectbox(
+    "Selecione o Tipo de Empresa:",
+    tipos_disponiveis
 )
 
-# Botão para iniciar a busca
-if st.button("Buscar Empresas"):
-    if not cidade_input:
-        st.warning("Por favor, digite o nome de uma cidade para iniciar a busca.")
-    else:
-        # Mostra uma mensagem de "carregando" enquanto a função de busca é executada
-        with st.spinner(f"Buscando por empresas em '{cidade_input}'..."):
-            df_empresas = buscar_empresas_osm(cidade_input)
+# ==============================================================================
+# PASSO 4: LÓGICA DE FILTRAGEM E EXIBIÇÃO DOS DADOS
+# ==============================================================================
 
-        # Após a busca, verifica se encontrou resultados
-        if df_empresas.empty:
-            st.error("Nenhuma empresa encontrada no OpenStreetMap para esta cidade.")
-        else:
-            st.success(f"Busca concluída! Encontramos {len(df_empresas)} locais relevantes.")
-            
-            # Mostra a tabela de dados
-            st.subheader("Resultados da Busca")
-            st.dataframe(df_empresas[['Nome', 'Tags']])
-            
-            # Cria e exibe o mapa
-            st.subheader("Mapa de Localizações")
-            
-            # Centraliza o mapa na primeira empresa da lista
-            map_center = [df_empresas['Latitude'].iloc[0], df_empresas['Longitude'].iloc[0]]
-            mapa = folium.Map(location=map_center, zoom_start=11)
-            
-            # Adiciona um marcador para cada empresa
-            for index, empresa in df_empresas.iterrows():
-                popup_html = f"""
-                <b>{empresa.get('Nome', 'N/A')}</b><br>
-                <hr>
-                <b>Tags OSM:</b> {empresa.get('Tags', '{}')}
-                """
-                folium.Marker(
-                    location=[empresa['Latitude'], empresa['Longitude']],
-                    popup=folium.Popup(popup_html, max_width=300),
-                    tooltip=empresa.get('Nome', 'N/A')
-                ).add_to(mapa)
-            
-            # Renderiza o mapa na tela
-            st_folium(mapa, width='100%', height=500)
+# Filtra o DataFrame com base na seleção do usuário
+if tipo_selecionado == "Exibir Todas":
+    # Se "Exibir Todas" for selecionado, o DataFrame filtrado é igual ao original
+    df_filtrado = df_empresas
+else:
+    # Caso contrário, filtra o DataFrame para manter apenas as linhas onde 'Tipo' é igual ao selecionado
+    df_filtrado = df_empresas[df_empresas['Tipo'] == tipo_selecionado]
+
+# Verifica se o DataFrame filtrado contém algum dado
+if df_filtrado.empty:
+    st.warning("Nenhuma empresa encontrada para o tipo selecionado.")
+else:
+    # Exibe um subtítulo com a contagem de resultados
+    st.subheader(f"Exibindo {len(df_filtrado)} empresa(s) do tipo '{tipo_selecionado}'")
+    
+    # Mostra uma tabela com os dados filtrados. Selecionamos apenas algumas colunas para exibir.
+    st.dataframe(df_filtrado[['Nome', 'Cidade', 'Estado']])
+    
+    # Adiciona um subtítulo para a seção do mapa
+    st.subheader("Mapa de Localizações")
+    
+    # Calcula o centro do mapa com base na média das coordenadas dos pontos filtrados
+    map_center = [df_filtrado['Latitude'].mean(), df_filtrado['Longitude'].mean()]
+    
+    # Cria o objeto do mapa Folium. O zoom_start define o nível de zoom inicial.
+    mapa = folium.Map(location=map_center, zoom_start=7)
+    
+    # Itera sobre cada linha do DataFrame filtrado para adicionar um marcador no mapa
+    for index, empresa in df_filtrado.iterrows():
+        # Cria o texto que aparecerá na janela popup ao clicar no marcador
+        popup_html = f"""
+        <b>{empresa.get('Nome', 'N/A')}</b><br>
+        <hr>
+        <b>Cidade:</b> {empresa.get('Cidade', 'N/A')}<br>
+        <b>Tipo:</b> {empresa.get('Tipo', 'N/A')}
+        """
+        
+        # Adiciona o marcador ao mapa
+        folium.Marker(
+            location=[empresa['Latitude'], empresa['Longitude']],
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=empresa.get('Nome', 'N/A') # Texto que aparece ao passar o mouse
+        ).add_to(mapa)
+    
+    # Renderiza o mapa Folium dentro do aplicativo Streamlit
+    st_folium(mapa, width='100%', height=500, returned_objects=[])
