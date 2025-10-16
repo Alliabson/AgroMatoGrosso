@@ -10,6 +10,19 @@ import time
 import re
 
 # ==============================================================================
+# CONFIGURAÇÃO INICIAL
+# ==============================================================================
+
+st.set_page_config(
+    page_title="Mapa das Algodoeiras de MT", 
+    layout="wide",
+    page_icon="🌱"
+)
+
+st.title("🌱 Mapa das Algodoeiras de Mato Grosso")
+st.markdown("Sistema híbrido: web scraping automático + inserção manual")
+
+# ==============================================================================
 # FUNÇÕES AUXILIARES
 # ==============================================================================
 
@@ -28,7 +41,8 @@ def is_pessoa_juridica(nome):
         'industrial', 'exportação', 'exportadora', 'comercial',
         'holding', 'corporation', 'corp', 'inc', 'cooperative',
         'cooperativa', 'agrônoma', 'agronoma', 'sementes',
-        'agricultura', 'ranch', 'farm', 'agribusiness'
+        'agricultura', 'ranch', 'farm', 'agribusiness',
+        'algodoeira', 'agricola', 'agroindustrial'
     ]
     
     nome_lower = nome.lower()
@@ -44,29 +58,31 @@ def is_pessoa_juridica(nome):
 
 def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
     """
-    Geocodifica uma empresa individual
+    Geocodifica uma empresa individual com múltiplas estratégias
     """
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_manual")
+    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v4")
     
     try:
-        # Tenta diferentes formatos de query
+        # Estratégias de busca melhoradas
         queries = [
             f"{nome}, {cidade}, {estado}, Brasil",
-            f"{nome}, {estado}, Brasil",
-            f"{nome}, Brasil",
-            f"{cidade}, {estado}, Brasil"  # Fallback
+            f"{nome}, {estado}, Brasil", 
+            f"Algodoeira {nome}, {estado}, Brasil",
+            f"{nome} algodão, {estado}, Brasil",
+            f"{nome} cotton, {estado}, Brasil",
+            f"{cidade}, {estado}, Brasil"  # Fallback para a cidade
         ]
         
         location = None
         for query in queries:
             try:
-                location = geolocator.geocode(query, timeout=10)
-                if location:
+                location = geolocator.geocode(query, timeout=15)
+                if location and location.latitude and location.longitude:
                     break
-            except:
+            except Exception as e:
                 continue
         
-        if location:
+        if location and location.latitude and location.longitude:
             endereco = location.address
             latitude = location.latitude
             longitude = location.longitude
@@ -77,6 +93,7 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
                               address_dict.get('town') or 
                               address_dict.get('village') or 
                               address_dict.get('municipality') or 
+                              address_dict.get('county') or
                               cidade)
             
             return {
@@ -91,98 +108,45 @@ def geocodificar_empresa(nome, cidade="Mato Grosso", estado="MT"):
                 'Fonte': 'Manual'
             }
         else:
-            st.warning(f"❌ Não foi possível geocodificar: {nome}")
-            return None
+            # Fallback: usa coordenadas aproximadas de Mato Grosso
+            st.warning(f"⚠️ Usando localização aproximada para: {nome}")
+            return {
+                'Nome': nome,
+                'Telefone': "Não Informado", 
+                'Tipo': 'Algodoeira',
+                'Cidade': cidade,
+                'Estado': estado,
+                'Latitude': -12.6819,  # Coordenadas aproximadas de MT
+                'Longitude': -56.9211,
+                'Endereco': f"Localização aproximada - {cidade}, {estado}",
+                'Fonte': 'Manual (Aproximado)'
+            }
             
     except Exception as e:
-        st.error(f"Erro na geocodificação de {nome}: {e}")
-        return None
-
-def geocodificar_multiplas_empresas(df):
-    """
-    Geocodifica um DataFrame de empresas
-    """
-    if df.empty:
-        return df
-        
-    st.write("🗺️ Iniciando geocodificação...")
-    
-    geolocator = Nominatim(user_agent="algodoeiras_mt_app_v3")
-    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.5)
-
-    latitudes = []
-    longitudes = []
-    cidades_detectadas = []
-    enderecos = []
-    
-    progress_bar = st.progress(0)
-    total_empresas = len(df)
-    status_text = st.empty()
-
-    for index, row in df.iterrows():
-        # CORREÇÃO: Garante que o progresso nunca ultrapasse 1.0
-        progresso_atual = min((index + 1) / total_empresas, 1.0)
-        progress_bar.progress(progresso_atual)
-        
-        status_text.text(f"📍 Buscando: {row['Nome'][:40]}... ({index + 1}/{total_empresas})")
-        
-        location = None
-        query_attempts = [
-            f"{row['Nome']}, Mato Grosso, Brasil",
-            "Cuiabá, Mato Grosso, Brasil"
-        ]
-        
-        for query in query_attempts:
-            try:
-                location = geocode(query)
-                if location:
-                    break
-            except Exception as e:
-                continue
-
-        if location:
-            latitudes.append(location.latitude)
-            longitudes.append(location.longitude)
-            enderecos.append(location.address)
-            
-            address = location.raw.get('address', {})
-            cidade = (address.get('city') or 
-                     address.get('town') or 
-                     address.get('village') or 
-                     address.get('municipality') or 
-                     "Mato Grosso")
-            cidades_detectadas.append(cidade)
-        else:
-            latitudes.append(None)
-            longitudes.append(None)
-            enderecos.append("Não Localizado")
-            cidades_detectadas.append("Mato Grosso")
-        
-        time.sleep(1.2)
-
-    df_result = df.copy()
-    df_result['Latitude'] = latitudes
-    df_result['Longitude'] = longitudes
-    df_result['Cidade'] = cidades_detectadas  # CORREÇÃO: Nome da coluna padronizado
-    df_result['Endereco'] = enderecos
-    df_result['Fonte'] = 'Web Scraping'
-    
-    df_final = df_result.dropna(subset=['Latitude', 'Longitude']).copy()
-    
-    status_text.text("✅ Geocodificação finalizada!")
-    progress_bar.empty()
-    return df_final
+        st.error(f"❌ Erro na geocodificação de {nome}: {e}")
+        # Fallback em caso de erro
+        return {
+            'Nome': nome,
+            'Telefone': "Não Informado",
+            'Tipo': 'Algodoeira', 
+            'Cidade': cidade,
+            'Estado': estado,
+            'Latitude': -12.6819,
+            'Longitude': -56.9211,
+            'Endereco': f"Localização aproximada - {cidade}, {estado}",
+            'Fonte': 'Manual (Erro)'
+        }
 
 # ==============================================================================
-# WEB SCRAPING
+# WEB SCRAPING MELHORADO
 # ==============================================================================
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def carregar_dados_web_scraping():
     """
-    Tenta carregar dados via web scraping
+    Web scraping melhorado para o site da AMPA
     """
-    st.write("🌐 Tentando web scraping automático...")
+    st.write("🌐 Iniciando web scraping da AMPA...")
     
     url = "https://ampa.com.br/consulta-associados-ativos/"
     lista_empresas = []
@@ -190,6 +154,8 @@ def carregar_dados_web_scraping():
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
         }
         
         response = requests.get(url, headers=headers, timeout=30)
@@ -197,51 +163,113 @@ def carregar_dados_web_scraping():
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Estratégia simplificada: busca por texto que parece nome de empresa
-        elementos_texto = soup.find_all(text=True)
+        # Estratégia 1: Busca por elementos com texto que parecem nomes de empresas
+        elementos_potenciais = soup.find_all(['div', 'p', 'li', 'span', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
         
         empresas_encontradas = set()
         
-        for texto in elementos_texto:
-            texto_limpo = texto.strip()
+        for elemento in elementos_potenciais:
+            texto = elemento.get_text(strip=True)
             
-            if len(texto_limpo) > 5 and is_pessoa_juridica(texto_limpo):
-                if texto_limpo not in empresas_encontradas:
-                    empresas_encontradas.add(texto_limpo)
+            # Filtra textos muito curtos ou que são claramente não-nomes
+            if (len(texto) < 4 or 
+                len(texto) > 100 or
+                texto.lower() in ['associado', 'nome', 'empresa', 'telefone', 'endereço', 'consulta', 'ativos'] or
+                texto.isdigit() or
+                '©' in texto or
+                'copyright' in texto.lower()):
+                continue
+            
+            # Verifica se é pessoa jurídica
+            if is_pessoa_juridica(texto):
+                if texto not in empresas_encontradas:
+                    empresas_encontradas.add(texto)
                     lista_empresas.append({
-                        'Nome': texto_limpo,
+                        'Nome': texto,
                         'Telefone': "Não Informado",
                         'Tipo': 'Algodoeira',
                         'Cidade': 'Mato Grosso',
                         'Estado': 'MT'
                     })
         
+        # Estratégia 2: Busca por padrões comuns em nomes de empresas
+        texto_completo = soup.get_text()
+        linhas = texto_completo.split('\n')
+        
+        for linha in linhas:
+            linha_limpa = linha.strip()
+            if (len(linha_limpa) > 4 and 
+                len(linha_limpa) < 100 and
+                is_pessoa_juridica(linha_limpa) and
+                linha_limpa not in empresas_encontradas):
+                
+                empresas_encontradas.add(linha_limpa)
+                lista_empresas.append({
+                    'Nome': linha_limpa,
+                    'Telefone': "Não Informado", 
+                    'Tipo': 'Algodoeira',
+                    'Cidade': 'Mato Grosso',
+                    'Estado': 'MT'
+                })
+        
         if lista_empresas:
             df = pd.DataFrame(lista_empresas)
+            df = df.drop_duplicates(subset=['Nome'])
             st.success(f"✅ Web scraping: {len(df)} empresas encontradas")
-            return geocodificar_multiplas_empresas(df)
+            
+            # Geocodificação em lote
+            return geocodificar_empresas_em_lote(df)
         else:
-            st.warning("⚠️ Web scraping não encontrou empresas. Use a inserção manual.")
+            st.warning("⚠️ Nenhuma empresa encontrada via web scraping. O site pode ter mudado.")
             return pd.DataFrame()
             
     except Exception as e:
-        st.error(f"❌ Falha no web scraping: {e}")
+        st.error(f"❌ Erro no web scraping: {str(e)}")
+        return pd.DataFrame()
+
+def geocodificar_empresas_em_lote(df):
+    """
+    Geocodifica empresas em lote com fallbacks
+    """
+    if df.empty:
+        return df
+        
+    st.write("🗺️ Geocodificando empresas...")
+    
+    geolocator = Nominatim(user_agent="algodoeiras_mt_batch_v1")
+    
+    resultados = []
+    total_empresas = len(df)
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for index, row in df.iterrows():
+        progresso = min((index + 1) / total_empresas, 1.0)
+        progress_bar.progress(progresso)
+        status_text.text(f"Processando: {row['Nome'][:30]}... ({index + 1}/{total_empresas})")
+        
+        # Geocodifica cada empresa
+        empresa_geocodificada = geocodificar_empresa(row['Nome'])
+        if empresa_geocodificada:
+            empresa_geocodificada['Fonte'] = 'Web Scraping'
+            resultados.append(empresa_geocodificada)
+        
+        time.sleep(1)  # Respeita rate limiting
+    
+    progress_bar.empty()
+    status_text.text("✅ Geocodificação concluída!")
+    
+    if resultados:
+        return pd.DataFrame(resultados)
+    else:
         return pd.DataFrame()
 
 # ==============================================================================
-# INTERFACE STREAMLIT
+# INTERFACE PRINCIPAL
 # ==============================================================================
 
-st.set_page_config(
-    page_title="Mapa das Algodoeiras de MT", 
-    layout="wide",
-    page_icon="🌱"
-)
-
-st.title("🌱 Mapa das Algodoeiras de Mato Grosso")
-st.markdown("Sistema híbrido: web scraping automático + inserção manual")
-
-# Inicializar session state para armazenar empresas
+# Inicializar session state
 if 'empresas_mapeadas' not in st.session_state:
     st.session_state.empresas_mapeadas = pd.DataFrame()
 
@@ -253,65 +281,91 @@ st.header("🔍 Coleta Automática")
 
 col1, col2 = st.columns([3, 1])
 with col1:
-    if st.button("🔄 Tentar Web Scraping Automático", type="primary"):
-        with st.spinner('Coletando dados da AMPA...'):
+    if st.button("🔄 Executar Web Scraping", type="primary", use_container_width=True):
+        with st.spinner('Coletando e processando dados da AMPA...'):
             df_scraping = carregar_dados_web_scraping()
             if not df_scraping.empty:
                 st.session_state.empresas_mapeadas = df_scraping
                 st.rerun()
+            else:
+                st.error("❌ Web scraping não retornou dados. Use a inserção manual abaixo.")
 
 with col2:
-    if st.button("🗑️ Limpar Dados"):
+    if st.button("🗑️ Limpar Dados", use_container_width=True):
         st.session_state.empresas_mapeadas = pd.DataFrame()
         st.rerun()
 
 # ==============================================================================
-# SEÇÃO 2: INSERÇÃO MANUAL
+# SEÇÃO 2: INSERÇÃO MANUAL MELHORADA
 # ==============================================================================
 
 st.header("✍️ Inserção Manual")
 
+# Lista de empresas conhecidas para facilitar
+empresas_sugeridas = [
+    "Algodoeira Reunidas",
+    "3ab Produtos Agricolas S.A.",
+    "Amaggi Agro",
+    "Bom Futuro Agro",
+    "Scheffer Agro",
+    "Agropecuária Maggi",
+    "SLC Agrícola",
+    "Brasil Agro",
+    "Agro Santa Rosa",
+    "Cotton Brasil"
+]
+
 with st.form("form_insercao_manual"):
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([2, 1])
     
     with col1:
-        nome_empresa = st.text_input(
+        nome_empresa = st.selectbox(
             "Nome da Empresa:",
-            placeholder="Ex: 3ab Produtos Agricolas S.A.",
-            help="Digite o nome completo da empresa algodoeira"
+            options=empresas_sugeridas,
+            index=0,
+            help="Selecione ou digite o nome da empresa algodoeira"
         )
+        
+        # Campo para digitar manualmente
+        nome_custom = st.text_input(
+            "Ou digite o nome manualmente:",
+            placeholder="Ex: Algodoeira São João",
+            help="Digite o nome completo da empresa"
+        )
+        
+        # Usa o nome customizado se fornecido
+        nome_final = nome_custom if nome_custom else nome_empresa
     
     with col2:
         cidade_empresa = st.text_input(
-            "Cidade (opcional):",
+            "Cidade:",
             value="Mato Grosso",
             help="Cidade onde a empresa está localizada"
         )
     
-    submitted = st.form_submit_button("📍 Buscar Localização", type="secondary")
+    submitted = st.form_submit_button("📍 Buscar e Adicionar ao Mapa", type="secondary", use_container_width=True)
     
-    if submitted and nome_empresa:
-        with st.spinner(f'Buscando localização de {nome_empresa}...'):
-            empresa_geocodificada = geocodificar_empresa(nome_empresa, cidade_empresa)
+    if submitted and nome_final:
+        with st.spinner(f'Buscando localização de {nome_final}...'):
+            empresa_geocodificada = geocodificar_empresa(nome_final, cidade_empresa)
             
             if empresa_geocodificada:
-                # Converte para DataFrame para facilitar a manipulação
                 nova_empresa_df = pd.DataFrame([empresa_geocodificada])
                 
-                # Adiciona às empresas existentes
                 if st.session_state.empresas_mapeadas.empty:
                     st.session_state.empresas_mapeadas = nova_empresa_df
                 else:
-                    # Verifica se já existe para evitar duplicatas
-                    if nome_empresa not in st.session_state.empresas_mapeadas['Nome'].values:
+                    # Evita duplicatas
+                    nomes_existentes = st.session_state.empresas_mapeadas['Nome'].values
+                    if nome_final not in nomes_existentes:
                         st.session_state.empresas_mapeadas = pd.concat(
                             [st.session_state.empresas_mapeadas, nova_empresa_df], 
                             ignore_index=True
                         )
+                        st.success(f"✅ {nome_final} adicionada ao mapa!")
                     else:
                         st.warning("⚠️ Esta empresa já está na lista!")
                 
-                st.success(f"✅ {nome_empresa} adicionada ao mapa!")
                 st.rerun()
 
 # ==============================================================================
@@ -319,163 +373,137 @@ with st.form("form_insercao_manual"):
 # ==============================================================================
 
 if not st.session_state.empresas_mapeadas.empty:
-    st.header("📊 Dados e Mapa")
+    st.header("📊 Dados Coletados")
     
     df_final = st.session_state.empresas_mapeadas
     
-    # CORREÇÃO: Verifica se as colunas existem antes de acessá-las
+    # Estatísticas
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric("Total de Empresas", len(df_final))
     
     with col2:
-        # Verifica se a coluna Cidade existe
-        if 'Cidade' in df_final.columns:
-            cidades_count = df_final['Cidade'].nunique()
-        else:
-            cidades_count = 0
+        cidades_count = df_final['Cidade'].nunique() if 'Cidade' in df_final.columns else 1
         st.metric("Cidades", cidades_count)
     
     with col3:
         if 'Fonte' in df_final.columns:
-            web_scraping_count = len(df_final[df_final['Fonte'] == 'Web Scraping'])
+            web_count = len(df_final[df_final['Fonte'] == 'Web Scraping'])
         else:
-            web_scraping_count = 0
-        st.metric("Web Scraping", web_scraping_count)
+            web_count = 0
+        st.metric("Web Scraping", web_count)
     
     with col4:
         if 'Fonte' in df_final.columns:
-            manual_count = len(df_final[df_final['Fonte'] == 'Manual'])
+            manual_count = len(df_final[df_final['Fonte'].str.contains('Manual')])
         else:
             manual_count = len(df_final)
         st.metric("Manuais", manual_count)
     
-    # Filtros
-    st.subheader("🎛️ Filtros")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # CORREÇÃO: Verifica se a coluna existe
-        if 'Cidade' in df_final.columns and not df_final.empty:
-            cidades = ["Exibir Todas"] + sorted(df_final['Cidade'].unique().tolist())
-        else:
-            cidades = ["Exibir Todas"]
-        cidade_selecionada = st.selectbox("Filtrar por Cidade:", cidades)
-    
-    with col2:
-        # CORREÇÃO: Verifica se a coluna existe
-        if 'Fonte' in df_final.columns and not df_final.empty:
-            fontes = ["Exibir Todas"] + sorted(df_final['Fonte'].unique().tolist())
-        else:
-            fontes = ["Exibir Todas"]
-        fonte_selecionada = st.selectbox("Filtrar por Fonte:", fontes)
-    
-    # Aplica filtros
-    df_filtrado = df_final.copy()
-    
-    if cidade_selecionada != "Exibir Todas" and 'Cidade' in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado['Cidade'] == cidade_selecionada]
-    
-    if fonte_selecionada != "Exibir Todas" and 'Fonte' in df_filtrado.columns:
-        df_filtrado = df_filtrado[df_filtrado['Fonte'] == fonte_selecionada]
-    
-    # Tabela - CORREÇÃO: Usa colunas que existem
-    st.subheader("📋 Empresas Mapeadas")
-    
-    # Define quais colunas mostrar (apenas as que existem)
-    colunas_para_mostrar = ['Nome']
-    if 'Cidade' in df_filtrado.columns:
-        colunas_para_mostrar.append('Cidade')
-    if 'Fonte' in df_filtrado.columns:
-        colunas_para_mostrar.append('Fonte')
-    if 'Endereco' in df_filtrado.columns:
+    # Tabela de dados
+    st.subheader("📋 Lista de Empresas")
+    colunas_para_mostrar = ['Nome', 'Cidade', 'Fonte']
+    if 'Endereco' in df_final.columns:
         colunas_para_mostrar.append('Endereco')
     
     st.dataframe(
-        df_filtrado[colunas_para_mostrar].reset_index(drop=True),
+        df_final[colunas_para_mostrar].reset_index(drop=True),
         use_container_width=True,
-        height=300
+        height=400
     )
     
-    # Mapa - CORREÇÃO: Verifica se há dados após filtragem
+    # Mapa
     st.subheader("🗺️ Mapa de Localizações")
     
-    if df_filtrado.empty:
-        st.warning("Nenhuma empresa encontrada com os filtros aplicados.")
-    else:
-        # Verifica se as colunas de coordenadas existem
-        if 'Latitude' not in df_filtrado.columns or 'Longitude' not in df_filtrado.columns:
-            st.error("Dados de localização não disponíveis.")
-        else:
-            # Remove linhas com coordenadas inválidas
-            df_mapa = df_filtrado.dropna(subset=['Latitude', 'Longitude']).copy()
-            
-            if df_mapa.empty:
-                st.warning("Nenhuma empresa com coordenadas válidas após filtragem.")
-            else:
-                map_center = [-12.6819, -56.9211]  # Centro de MT
-                if len(df_mapa) > 0:
-                    map_center = [df_mapa['Latitude'].mean(), df_mapa['Longitude'].mean()]
-                
-                mapa = folium.Map(location=map_center, zoom_start=7)
-
-                for index, empresa in df_mapa.iterrows():
-                    # Define cor baseada na fonte
-                    cor = 'blue' if empresa.get('Fonte') == 'Manual' else 'green'
-                    
-                    popup_html = f"""
-                    <div style="min-width: 250px">
-                        <h4>{empresa['Nome']}</h4>
-                        <hr>
-                        <b>📍 Cidade:</b> {empresa.get('Cidade', 'Não informada')}<br>
-                        <b>🏢 Tipo:</b> {empresa.get('Tipo', 'Algodoeira')}<br>
-                        <b>📞 Telefone:</b> {empresa.get('Telefone', 'Não Informado')}<br>
-                        <b>🔍 Fonte:</b> {empresa.get('Fonte', 'Manual')}<br>
-                        <b>🎯 Endereço:</b> {empresa.get('Endereco', 'Não disponível')}
-                    </div>
-                    """
-                    
-                    folium.Marker(
-                        location=[empresa['Latitude'], empresa['Longitude']],
-                        popup=folium.Popup(popup_html, max_width=300),
-                        tooltip=f"{empresa['Nome']} ({empresa.get('Fonte', 'Manual')})",
-                        icon=folium.Icon(color=cor, icon='industry', prefix='fa')
-                    ).add_to(mapa)
-                
-                st_folium(mapa, width='100%', height=500, returned_objects=[])
+    # Filtra empresas com coordenadas válidas
+    df_mapa = df_final.dropna(subset=['Latitude', 'Longitude']).copy()
     
-    # Download - CORREÇÃO: Botão só aparece se houver dados
-    if not df_final.empty:
-        st.download_button(
-            label="📥 Baixar Dados Completos",
-            data=df_final.to_csv(index=False, encoding='utf-8-sig'),
-            file_name="algodoeiras_mt_completo.csv",
-            mime="text/csv"
-        )
+    if df_mapa.empty:
+        st.warning("Nenhuma empresa com coordenadas válidas para exibir no mapa.")
+    else:
+        # Centro do mapa em Mato Grosso
+        map_center = [-12.6819, -56.9211]
+        if len(df_mapa) > 0:
+            map_center = [df_mapa['Latitude'].mean(), df_mapa['Longitude'].mean()]
+        
+        mapa = folium.Map(location=map_center, zoom_start=7)
+
+        for index, empresa in df_mapa.iterrows():
+            # Define cor baseada na fonte
+            if 'Manual' in str(empresa.get('Fonte', '')):
+                cor = 'blue'
+                icone = 'user'
+            else:
+                cor = 'green' 
+                icone = 'industry'
+            
+            popup_html = f"""
+            <div style="min-width: 250px">
+                <h4>{empresa['Nome']}</h4>
+                <hr>
+                <b>📍 Cidade:</b> {empresa.get('Cidade', 'Não informada')}<br>
+                <b>🏢 Tipo:</b> {empresa.get('Tipo', 'Algodoeira')}<br>
+                <b>🔍 Fonte:</b> {empresa.get('Fonte', 'Manual')}<br>
+                <b>🎯 Endereço:</b> {empresa.get('Endereco', 'Localização aproximada')}
+            </div>
+            """
+            
+            folium.Marker(
+                location=[empresa['Latitude'], empresa['Longitude']],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=empresa['Nome'],
+                icon=folium.Icon(color=cor, icon=icone, prefix='fa')
+            ).add_to(mapa)
+        
+        st_folium(mapa, width='100%', height=500, returned_objects=[])
+    
+    # Download
+    st.download_button(
+        label="📥 Baixar Dados Completos (CSV)",
+        data=df_final.to_csv(index=False, encoding='utf-8-sig'),
+        file_name="algodoeiras_mato_grosso.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
 else:
-    st.info("👆 Use as opções acima para adicionar empresas ao mapa")
+    st.info("""
+    👆 **Para começar:**
+    
+    1. **Clique em 'Executar Web Scraping'** para tentar coleta automática
+    2. **Se não funcionar**, use a seção de inserção manual abaixo
+    3. **Selecione uma empresa** da lista ou **digite o nome** manualmente
+    4. **Clique em 'Buscar e Adicionar ao Mapa'**
+    """)
 
 # ==============================================================================
 # INSTRUÇÕES
 # ==============================================================================
 
-with st.expander("📖 Como usar este aplicativo"):
+with st.expander("📖 Guia de Uso"):
     st.markdown("""
-    **1. Web Scraping Automático** (Recomendado primeiro)
-    - Clique em "Tentar Web Scraping Automático"
+    **🎯 Como usar este aplicativo:**
+    
+    **1. Web Scraping Automático** (Primeira tentativa)
+    - Clique em "Executar Web Scraping"
     - O sistema tenta coletar dados do site da AMPA
-    - Se funcionar, você terá uma base inicial de empresas
+    - Se funcionar, você terá uma base de empresas
     
     **2. Inserção Manual** (Quando o scraping falha)
-    - Digite o nome exato da empresa
-    - Clique em "Buscar Localização"
-    - O sistema geocodifica e adiciona ao mapa
+    - Selecione uma empresa da lista sugerida
+    - Ou digite o nome manualmente no campo abaixo
+    - Clique em "Buscar e Adicionar ao Mapa"
+    - O sistema sempre retorna uma localização (exata ou aproximada)
     
-    **Dicas:**
-    - Use nomes completos das empresas para melhor geocodificação
-    - Empresas com 'LTDA', 'S.A.' são detectadas automaticamente
-    - Marcadores azuis = inserção manual | Marcadores verdes = web scraping
-    - Se encontrar erros, use a inserção manual para adicionar empresas específicas
+    **🔧 Solução de Problemas:**
+    
+    - **Web scraping retorna poucas empresas?** → Use a inserção manual
+    - **Geocodificação não encontra localização?** → Usamos coordenadas aproximadas de MT
+    - **Empresa não está na lista?** → Digite manualmente no campo customizado
+    
+    **📊 Sobre os dados:**
+    - Marcadores **verdes** = Web scraping
+    - Marcadores **azuis** = Inserção manual
+    - Localizações são sempre fornecidas (exatas ou aproximadas)
     """)
